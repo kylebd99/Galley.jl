@@ -38,8 +38,9 @@ function modify_protocols!(expr)
 
     vars = union([get_index_set(i) for i in conjuncts]..., [get_index_set(i) for i in disjuncts]...)
     for var in vars
-        relevant_conjuncts = [i for i in conjuncts if var ∈ get_index_set(i)]
-        relevant_disjuncts = [i for i in disjuncts if var ∈ get_index_set(i)]
+        # Because dense formats are not selective, we always treat them as disjuncts
+        relevant_conjuncts = [i for i in conjuncts if var ∈ get_index_set(i) && get_index_format(i, var) != t_dense]
+        relevant_disjuncts = union([i for i in disjuncts if var ∈ get_index_set(i)], [i for i in conjuncts if var ∈ get_index_set(i) && get_index_format(i, var) == t_dense])
         if length(relevant_conjuncts) == 0
             # If there are no covering conjuncts, then we need to walk all disjuncts
             for input in relevant_disjuncts
@@ -70,9 +71,9 @@ function modify_protocols!(expr)
                 # the nnz (barring things like prod reductions which might be a TODO).
                 # TODO: Replace this with conditional estimates
                 if length(indices_before_var) > 0
-                    size_before_var = estimate_nnz(reduce_tensor_stats(min, setdiff(get_index_set(input), indices_before_var),  input))
+                    size_before_var = estimate_nnz(input, indices=indices_before_var)
                 end
-                size_after_var = estimate_nnz(reduce_tensor_stats(min, setdiff(get_index_set(input), [indices_before_var..., var]),  input))
+                size_after_var = estimate_nnz(input, indices=[indices_before_var..., var])
                 push!(costs, max(1, size_after_var/size_before_var))
             end
             min_cost = minimum(costs)

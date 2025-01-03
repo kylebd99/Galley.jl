@@ -55,7 +55,10 @@ function load_dataset(path, stats_type, dbconn; subgraph_matching_data=false)
         copyto!(vertex_vector,  sparsevec(node_ids, values, n))
         vertex_vectors[label] =  Input(vertex_vector, :i, "v_$label")
         vertex_vectors[label].stats = stats_type(vertex_vectors[label].tns.val, [:i])
-        if !isnothing(dbconn)
+        if dbconn == "Umbra"
+            conn = LibPQ.Connection("host=127.0.0.1 port=5432 user=postgres password=postgres")
+            fill_table_umbra(conn, vertex_vector, [:i], "v_$label")
+        elseif !isnothing(dbconn)
             stats = vertex_vectors[label].stats
             fill_table(dbconn, vertex_vector, [Index(:i)], vertex_label_to_table(label))
             vertex_vectors[label] = Input(DuckDBTensor(vertex_label_to_table(label), ["i"]), :i, "v_$label")
@@ -78,7 +81,10 @@ function load_dataset(path, stats_type, dbconn; subgraph_matching_data=false)
         copyto!(edge_matrix, sparse(i_ids, j_ids, values, n, n))
         edge_matrices[label] = Input(edge_matrix, :i, :j, "e_$label")
         edge_matrices[label].stats = stats_type(edge_matrices[label].tns.val, [:i, :j])
-        if !isnothing(dbconn)
+        if dbconn == "Umbra"
+            conn = LibPQ.Connection("host=127.0.0.1 port=5432 user=postgres password=postgres")
+            fill_table_umbra(conn, edge_matrix, [:i, :j], "e_$label")
+        elseif !isnothing(dbconn)
             stats = edge_matrices[label].stats
             fill_table(dbconn, edge_matrix, [Index(:i), Index(:j)], edge_label_to_table(label))
             edge_matrices[label] = Input(DuckDBTensor(edge_label_to_table(label), ["i", "j"]), :i, :, "e_$label")

@@ -24,6 +24,7 @@ function run_experiments(experiment_params::Vector{ExperimentParams}; use_new_pr
         put!(status_channel, (num_attempted, num_completed, num_correct, num_with_values, exp_finished))
         worker_pid = -1
         cur_query = 1
+        f = nothing
         while !exp_finished
             if use_new_processes
                 if worker_pid == -1
@@ -47,8 +48,7 @@ function run_experiments(experiment_params::Vector{ExperimentParams}; use_new_pr
                     num_attempted, num_completed, num_correct, num_with_values, exp_finished = fetch(status_channel)
                     finished = exp_finished
                 end
-
-                if ((time()-last_result) > experiment.timeout) && (time() - load_start > 100)
+                if ((time()-last_result) > experiment.timeout) && (time() - load_start > 200)
                     println("REMOVING WORKER")
                     interrupt(worker_pid)
                     rmprocs(worker_pid)

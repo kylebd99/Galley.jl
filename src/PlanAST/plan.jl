@@ -424,7 +424,7 @@ function get_conjunctive_and_disjunctive_inputs(n::PlanNode, disjunct_branch=fal
         conjuncts = []
         disjuncts = []
         for arg in n.args
-            arg_results = if isannihilator(map_op, get_default_value(arg.stats))
+            arg_results = if isannihilator(map_op, get_default_value(arg.stats)) || length(n.args) == 1
                 get_conjunctive_and_disjunctive_inputs(arg, disjunct_branch)
             else
                 get_conjunctive_and_disjunctive_inputs(arg, true)

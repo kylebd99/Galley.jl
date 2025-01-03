@@ -42,7 +42,6 @@ function isdistributive(f, g)
     return distributes
 end
 
-
 function cansplitpush(f, g)
     if typeof(f) == PlanNode && typeof(g) == PlanNode
         throw(error("Can't check splitpush of plan nodes!"))

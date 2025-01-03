@@ -67,61 +67,6 @@ function align_x_dims(X, x_start, x_dim)
     return Tensor(Dense(SparseList(Element(0.0))), new_X)
 end
 
-#=
-function duckdb_lr(li_tns, orders_x, order_cust, customer_x, supplier_x, part_x, θ)
-    dbconn = DBInterface.connect(DuckDB.DB, ":memory:")
-    fill_table(dbconn, li_tns, [:p, :s, :o, :i], "lineitem")
-    fill_table(dbconn, orders_x, [:j, :o], "orders")
-    fill_table(dbconn, order_cust, [:c, :o], "order_cust")
-    fill_table(dbconn, customer_x, [:j, :c], "customer")
-    fill_table(dbconn, supplier_x, [:j, :s], "supplier")
-    fill_table(dbconn, part_x, [:j, :p], "part")
-    fill_table(dbconn, θ, [:j, :p], "theta")
-    query_stmnt = "SELECT i, SUM(X.v*theta.v)
-    FROM (
-    (SELECT i, j, v
-     FROM lineitem
-     INNER JOIN orders on linitem.o=orders.o
-     GROUP BY lineitem.i, orders.j, orders.v)
-    UNION BY NAME
-    (SELECT i, j, v
-     FROM lineitem
-     INNER JOIN order_cust on linitem.o=order_cust.o
-     INNER JOIN customer on customer.c=order_cust.c
-     GROUP BY lineitem.i, customer.j, customer.v)
-    UNION BY NAME
-    (SELECT i, j, v
-     FROM lineitem
-     INNER JOIN supplier on lineitem.s=supplier.s
-     GROUP BY lineitem.i, supplier.j, supplier.v)
-    )
-    UNION BY NAME
-    (SELECT i, j, v
-     FROM lineitem
-     INNER JOIN part on lineitem.p=part.p
-     GROUP BY lineitem.i, part.j, part.v)
-    ) as X
-    INNER JOIN theta on X.j=theta.j
-    GROUP BY i
-    "
-    query_result = @timed DuckDB.execute(dbconn, query_stmnt)
-    println(query_result)
-end
-
-function fill_table(dbconn, tensor, idx_names, table_name)
-    create_table(dbconn, idx_names, table_name, typeof(default(tensor)))
-    appender = DuckDB.Appender(dbconn, "$table_name")
-    data = tensor_to_vec_of_tuples(tensor)
-    for row in data
-        for val in row
-            DuckDB.append(appender, val)
-        end
-        DuckDB.end_row(appender)
-    end
-    DuckDB.flush(appender)
-    DuckDB.close(appender)
-end
- =#
 function finch_lr(li_tns, orders_x, order_cust, customer_x, supplier_x, part_x, θ; dense=false)
     X = dense ? Tensor(Dense(Dense(Element(0.0)))) : Tensor(Dense(Sparse(Element(0.0))))
     P = Tensor(Dense((Element(0.0))))
@@ -272,7 +217,7 @@ function finch_nn(li_tns, orders_x, order_cust, customer_x, supplier_x, part_x, 
         h1_relu .= 0
         for i=_
             for k=_
-                h1_relu[k, i] = relu(h1[k, i])
+                h1_relu[k, i] = max(0, h1[k, i])
             end
         end
     end
@@ -292,7 +237,7 @@ function finch_nn(li_tns, orders_x, order_cust, customer_x, supplier_x, part_x, 
         h2_relu .= 0
         for i=_
             for k=_
-                h2_relu[k, i] = relu(h2[k, i])
+                h2_relu[k, i] = max(0, h2[k, i])
             end
         end
     end
@@ -521,7 +466,7 @@ function finch_nn2(li_tns, supplier_x1, supplier_x2, part_x, W1, W2, W3; dense=f
         for i1=_
             for i2=_
                 for k=_
-                    h1_relu[k, i2, i1] = relu(h1[k, i2, i1])
+                    h1_relu[k, i2, i1] = max(0, h1[k, i2, i1])
                 end
             end
         end
@@ -545,7 +490,7 @@ function finch_nn2(li_tns, supplier_x1, supplier_x2, part_x, W1, W2, W3; dense=f
         for i1=_
             for i2=_
                 for k=_
-                    h2_relu[k, i2, i1] = relu(h2[k, i2, i1])
+                    h2_relu[k, i2, i1] = max(0, h2[k, i2, i1])
                 end
             end
         end
@@ -632,7 +577,7 @@ function main()
                                                             Input(supplier_x, :j, :s, "supplier_x"),
                                                             Input(part_x, :j, :p, "part_x")))))
     θ = Tensor(Dense(Element(0)), ones(Int, size(supplier_x)[1]) .% 100)
-
+ 
     # ---------------- Linear Regression On Star Join -------------------
     P_query = Query(:out, Mat(:i, Aggregate(+, :j, MapJoin(*, X_g[:i, :j], Input(θ, :j)))))
     g_times = []
@@ -690,9 +635,9 @@ function main()
     hidden_layer_size = 25
     feature_size = size(part_x)[1]
     W1 = Tensor(Dense(Dense(Element(0.0))), rand(Int, hidden_layer_size, feature_size) .% 10)
-    h1 = Mat(:i, :k1, MapJoin(relu, Σ(:j, MapJoin(*, X_g[:i, :j], Input(W1, :k1, :j)))))
+    h1 = Mat(:i, :k1, MapJoin(max, 0, Σ(:j, MapJoin(*, X_g[:i, :j], Input(W1, :k1, :j)))))
     W2 = Tensor(Dense(Dense(Element(0.0))), rand(Int, hidden_layer_size, hidden_layer_size) .% 10)
-    h2 = Mat(:i, :k2, MapJoin(relu, Σ(:k1, MapJoin(*, h1[:i, :k1], Input(W2, :k2, :k1)))))
+    h2 = Mat(:i, :k2, MapJoin(max, 0,  Σ(:k1, MapJoin(*, h1[:i, :k1], Input(W2, :k2, :k1)))))
     W3 = Tensor(Dense(Element(0.0)), rand(Int, hidden_layer_size) .% 10)
     h3 = Mat(:i, MapJoin(sigmoid, Σ(:k2, MapJoin(*, h2[:i, :k2], Input(W3, :k2)))))
     P = Query(:out, h3)
@@ -789,6 +734,7 @@ function main()
     push!(results, ("Covariance (SQ)", "Finch (Dense)", string(mean(f_cov_times[2:end])), string(0)))
     push!(results, ("Covariance (SQ)", "Finch (Sparse)", string(mean(f_sp_cov_times[2:end])), string(0)))
 
+ 
     # This formulation makes each row of the output a pair of line items for the same part
     # and includes information about their suppliers li_tns[s1, i1, p]
     supplier_x = floor.(Matrix(select(supplier, Not([:SuppKey])))') .% 100
@@ -807,8 +753,7 @@ function main()
                                                     Input(supplier_x1, :j, :s1, "supplier_x1"),
                                                     Input(supplier_x2, :j, :s2, "supplier_x2")))))
     θ = Tensor(Dense(Element(0.0)), ones(Int, size(supplier_x1)[1]) .% 100)
-
-
+ 
     # ---------------- Linear Regression On Many-Many Join -------------------
     p_query = Query(:out, Materialize(t_undef, t_undef, :i2, :i1,  Σ(:k, MapJoin(*, X_g[:i2, :i1, :k], Input(θ, :k)))))
     g_times = []
@@ -894,9 +839,9 @@ function main()
     hidden_layer_size = 25
     feature_size = size(part_x)[1]
     W1 = Tensor(Dense(Dense(Element(0.0))), rand(Int, hidden_layer_size, feature_size) .% 10)
-    h1 = Mat(:i2, :i1, :k1, MapJoin(relu, Σ(:j, MapJoin(*, X_g[:i2, :i1, :j], Input(W1, :k1, :j)))))
+    h1 = Mat(:i2, :i1, :k1, MapJoin(max, 0, Σ(:j, MapJoin(*, X_g[:i2, :i1, :j], Input(W1, :k1, :j)))))
     W2 = Tensor(Dense(Dense(Element(0.0))), rand(Int, hidden_layer_size, hidden_layer_size) .% 10)
-    h2 = Mat(:i2, :i1, :k2, MapJoin(relu, Σ(:k1, MapJoin(*, h1[:i2, :i1, :k1], Input(W2, :k2, :k1)))))
+    h2 = Mat(:i2, :i1, :k2, MapJoin(max, 0, Σ(:k1, MapJoin(*, h1[:i2, :i1, :k1], Input(W2, :k2, :k1)))))
     W3 = Tensor(Dense(Element(0.0)), rand(Int, hidden_layer_size) .% 10)
     h3 = Mat(:i2, :i1, MapJoin(sigmoid, Σ(:k2, MapJoin(*, h2[:i2, :i1, :k2], Input(W3, :k2)))))
     P = Query(:out, h3)
@@ -925,7 +870,7 @@ function main()
         push!(f_nn_times, f_time)
         f_nn = P
     end
-
+    
     println("Galley Exec: (Min: $(minimum(g_times[2:end])), Mean: $(mean(g_times[2:end])), Max: $(maximum(g_times[2:end]))]")
     println("Galley Opt: (Min: $(minimum(g_opt_times[2:end])), Mean: $(mean(g_opt_times[2:end])), Max: $(maximum(g_opt_times[2:end]))]")
     println("Finch (Sparse) Exec: $(mean(f_sp_times[2:end]))")
@@ -961,9 +906,10 @@ function main()
     push!(results, ("Neural Network (SJ)", "Finch (Dense)", string(mean(f_nn_times[2:end])), string(0)))
 
     writedlm("Experiments/Results/tpch_inference.csv", results, ',')
-    data = vcat(CSV.read("Experiments/Results/tpch_inference.csv", DataFrame), CSV.read("Experiments/Results/tpch_inference_python.csv", DataFrame))
-    data = data[(data.Method .!= "Pandas"), :]
-    data = data[(data.Method .!= "Pandas+BLAS"), :]
+    data = vcat(CSV.read("Experiments/Results/tpch_inference.csv", DataFrame), 
+                CSV.read("Experiments/Results/tpch_inference_python.csv", DataFrame), 
+                CSV.read("Experiments/Results/tpch_inference_polars_serial.csv", DataFrame), 
+                CSV.read("Experiments/Results/tpch_inference_polars_parallel.csv", DataFrame))
     data[(data.Method .== "Galley"), :Method] .= "Galley (Opt)"
     data[!, :RelativeOptTime] = copy(data[!, :ExecuteTime]) .+ copy(data[!, :OptTime])
     data[!, :RelativeExecTime] = copy(data[!, :ExecuteTime])
@@ -975,10 +921,9 @@ function main()
     data[!, :RelativeOptTime] = log10.(data.RelativeOptTime)
     ordered_algorithms = CategoricalArray(data.Algorithm)
     ordered_methods = CategoricalArray(data.Method)
-    #    levels!(ordered_methods, ["Galley", "Finch (Dense)", "Finch (Sparse)", "Pandas", "Pandas+Numpy", "Pandas+BLAS"])
     alg_order = ["Covariance (SJ)", "Covariance (SQ)", "Logistic Regression (SJ)", "Logistic Regression (SQ)", "Linear Regression (SJ)", "Linear Regression (SQ)", "Neural Network (SJ)", "Neural Network (SQ)"]
     levels!(ordered_algorithms, alg_order)
-    method_order = ["Galley (Opt)", "Finch (Dense)", "Finch (Sparse)", "Pandas+Numpy"]
+    method_order = ["Galley (Opt)", "Finch (Dense)", "Finch (Sparse)", "Pandas+Numpy", "Polars+PyTorch (1 Core)", "Polars+PyTorch (24 Core)"]
     levels!(ordered_methods, method_order)
     gbplot = StatsPlots.groupedbar(ordered_algorithms,
                                     data.RelativeOptTime,
@@ -986,7 +931,7 @@ function main()
                                     legend = :topright,
                                     size = (3000, 1000),
                                     ylabel = "Relative Runtime",
-                                    ylims=[-3.1,1.05],
+                                    ylims=[-3.1,1.5],
                                     yticks=([-3, -2, -1, 0, 1], [".001", ".01", ".1", "1", "10"]),
                                     xtickfontsize=22,
                                     ytickfontsize=22,
@@ -998,11 +943,12 @@ function main()
                                     bottom_margin=35Measures.mm,
                                     fillrange=-4,
                                     legend_columns=2,
-                                    color=[palette(:blues)[1] palette(:default)[2] palette(:default)[3] palette(:default)[4]])
+                                    color=[palette(:blues)[1] palette(:default)[2] palette(:default)[3] palette(:default)[4]  palette(:default)[5]  palette(:default)[7]],
+                                    fillstyle=[nothing nothing nothing nothing nothing nothing])
     n_groups = length(unique(data.Algorithm))
     n_methods = length(unique(ordered_methods))
     left_edges = [i for i in 0:n_groups-1]
-    first_pos = left_edges .+ .8/n_methods
+    first_pos = left_edges .+ 1/n_methods
     galley_data = data[data.Method .== "Galley (Opt)", :]
     galley_data = collect(zip(galley_data.Algorithm, galley_data.RelativeExecTime))
     sort!(galley_data, by = (x)->[i for (i, alg) in enumerate(alg_order) if alg == x[1]][1])

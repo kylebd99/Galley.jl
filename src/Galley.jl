@@ -107,9 +107,6 @@ function galley(input_queries::Vector{PlanNode};
         append!(logical_queries, logical_plan)
     end
     faq_opt_time = time() - faq_opt_start
-    if output_logical_plan
-        return logical_queries
-    end
     if verbose >= 1
         println("FAQ Opt Time: $faq_opt_time")
         println("--------------- Logical Plan ---------------")
@@ -153,8 +150,23 @@ function galley(input_queries::Vector{PlanNode};
         end
         append!(physical_queries, p_queries)
     end
+    total_phys_opt_time += time() - phys_opt_start
 
+
+    # We now compute the logical queries in order by performing the following steps:
+    #   1. Query Splitting: We reduce queries to a size which is manageably compilable by Finch
+    #   2. Physical Optimization: We make three decision about execution strategy for each query
+    #           a. Loop Order (which also determines transpositions)
+    #           b. Output Format
+    #           c. Access Protocols
+    #   3. Execution: No more decisions are made, we simply build the kernel and hand it to
+    #      Finch.
+    #   4. Touch Up: We check the actual output cardinality and fix our stats accordingly.
+    plan_hash_result, alias_result = Dict{UInt64, Any}(), Dict{IndexExpr, Any}()
     for query in physical_queries
+        phys_opt_start = time()
+        insert_node_ids!(query)
+        insert_statistics!(ST, query, bindings=alias_stats)
         if query.expr.kind === Aggregate
             loop_order_when_used = alias_to_loop_order[query.name.name]
             output_stats = query.expr.stats
@@ -171,32 +183,18 @@ function galley(input_queries::Vector{PlanNode};
             alias_stats[query.name.name] = query.expr.stats
             @assert !isnothing(get_index_order(alias_stats[query.name.name])) "$(query.name.name)"
         end
-    end
 
-    for query in physical_queries
         insert_node_ids!(query)
         insert_statistics!(ST, query, bindings=alias_stats)
         # Choose access protocols
         modify_protocols!(query.expr)
         alias_stats[query.name.name] = query.expr.stats
         @assert !isnothing(get_index_order(alias_stats[query.name.name])) "$(query.name.name)"
-    end
-    total_phys_opt_time += time() - phys_opt_start
 
-    # We now compute the logical queries in order by performing the following steps:
-    #   1. Query Splitting: We reduce queries to a size which is manageably compilable by Finch
-    #   2. Physical Optimization: We make three decision about execution strategy for each query
-    #           a. Loop Order (which also determines transpositions)
-    #           b. Output Format
-    #           c. Access Protocols
-    #   3. Execution: No more decisions are made, we simply build the kernel and hand it to
-    #      Finch.
-    #   4. Touch Up: We check the actual output cardinality and fix our stats accordingly.
-    plan_hash_result, alias_result = Dict{UInt64, Any}(), Dict{IndexExpr, Any}()
-    for query in physical_queries
         verbose > 2 && println("--------------- Computing: $(query.name) ---------------")
         verbose > 2 && println(query)
         verbose > 3 && validate_physical_query(query)
+        total_phys_opt_time += time() - phys_opt_start
         exec_start = time()
         query_hash = cannonical_hash(query.expr, alias_hash)
         alias_hash[query.name.name] = query_hash
@@ -209,7 +207,12 @@ function galley(input_queries::Vector{PlanNode};
         total_exec_time += time() - exec_start
         if update_cards && alias_result[query.name.name] isa Tensor
             count_start = time()
-            fix_cardinality!(alias_stats[query.name.name], count_non_default(alias_result[query.name.name]))
+            if length(get_index_set(alias_stats[query.name.name])) < 4
+                alias_stats[query.name.name] = ST(alias_result[query.name.name], 
+                                                        get_index_order(alias_stats[query.name.name]))
+            else
+                fix_cardinality!(alias_stats[query.name.name], count_non_default(alias_result[query.name.name]))
+            end
             total_count_time += time() - count_start
         end
     end

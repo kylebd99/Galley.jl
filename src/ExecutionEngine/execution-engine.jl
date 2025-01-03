@@ -109,9 +109,10 @@ function execute_query(alias_dict, q::PlanNode, verbose)
         verbose >= 2 && println("Stored Entries: ", stored)
         verbose >= 2 && println("Estimated Entries: ", estimated_size)
         verbose >= 2 && println("Non Default Entries: ", non_default)
-        if (stored > (1.2 * non_default)) || (non_default > 5 * estimated_size) ||(non_default < estimated_size / 5)
+        if (stored > (2 * non_default)) || (non_default > 5 * estimated_size) ||(non_default < estimated_size / 5)
             fix_cardinality!(mat_expr.stats, non_default)
             best_formats = select_output_format(mat_expr.stats, reverse(get_index_order(mat_expr.stats)), get_index_order(mat_expr.stats))
+            verbose >= 2 &&  println("Touching Up (best_formats: $best_formats, old_formats: $output_formats)")
             if output_formats != best_formats
                 output_tensor = initialize_tensor(best_formats,
                                             output_dimensions,

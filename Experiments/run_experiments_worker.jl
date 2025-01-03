@@ -23,7 +23,7 @@ end
 
 function attempt_experiment(experiment::ExperimentParams, starting_query, results_channel, status_channel)
     println("Starting Worker Experiment")
-    dbconn = experiment.use_duckdb ? DBInterface.connect(DuckDB.DB, ":memory:") : nothing
+    dbconn = experiment.use_duckdb ? DBInterface.connect(DuckDB.DB, ":memory:") : ( experiment.use_umbra ? "Umbra" : nothing)
     queries = load_workload(experiment.workload, experiment.stats_type, dbconn)
 #    queries = [q for q in queries if occursin("sparse_8_120", q.query_path)]
     num_attempted, num_completed, num_correct, num_with_values, _  = (0, 0, 0, 0, false)
@@ -39,10 +39,11 @@ function attempt_experiment(experiment::ExperimentParams, starting_query, result
         num_attempted +=1
         try
             if experiment.use_umbra
-                if experiment.warm_start
-                    result, execute_time = execute_galley_query_umbra(query.query[1])
-                    result, execute_time = execute_galley_query_umbra(query.query[1])
-                    put!(results_channel, (string(experiment.workload), query.query_type, query.query_path, string(execute_time), "0.0", "0.0", string(result[1]), string(false)))
+                if query.query_path ∈ [""] # This query kills the umbra server due to an internal error.
+                    put!(results_channel, (string(experiment.workload), query.query_type, query.query_path, "0.0", "0.0", "0.0", "0.0", string(true)))
+                else
+                    result, execute_time, opt_time, compile_time = execute_galley_query_umbra(query.query[1], experiment.use_umbra_parallel)
+                    put!(results_channel, (string(experiment.workload), query.query_type, query.query_path, string(execute_time), string(opt_time), string(compile_time), string(result[1]), string(false)))
                     if !isnothing(query.expected_result)
                         if result[1] == query.expected_result
                             num_correct += 1
