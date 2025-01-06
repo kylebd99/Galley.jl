@@ -520,12 +520,12 @@ end
 
 function main()
     # First, we load the TPCH data
-    customer = CSV.read("Experiments/Data/TPCH/customer.tbl", DataFrame, delim='|', header=[:CustomerKey, :Name, :Address, :NationKey, :Phone, :AcctBal, :MktSegment, :Comment, :Col9])
-    lineitem = CSV.read("Experiments/Data/TPCH/lineitem.tbl", DataFrame, delim='|', header=[:OrderKey, :PartKey, :SuppKey, :LineNumber, :Quantity, :ExtendedPrice, :Discount, :Tax, :ReturnFlag, :LineStatus, :ShipDate, :CommitDate, :ReceiptDate, :ShipInstruct, :ShipMode, :Comment])
-    orders = CSV.read("Experiments/Data/TPCH/orders.tbl", DataFrame, delim='|', header=[:OrderKey, :CustomerKey, :OrderStatus, :TotalPrice, :OrderDate, :OrderPriority, :Clerk, :ShipPriority, :Comment])
-    partsupp = CSV.read("Experiments/Data/TPCH/partsupp.tbl", DataFrame, delim='|', header=[:PartKey, :SuppKey, :AvailQty, :SupplyCost, :Comment])
-    part = CSV.read("Experiments/Data/TPCH/part.tbl", DataFrame, delim='|', header=[:PartKey, :Name, :MFGR, :Brand, :Type, :Size, :Container, :RetailPrice, :Comment])
-    supplier = CSV.read("Experiments/Data/TPCH/supplier.tbl", DataFrame, delim='|', header=[:SuppKey, :Name, :Address, :NationKey, :Phone, :AcctBal, :Comment])
+    customer = CSV.read("Experiments/Data/TPCH_5/customer.tbl", DataFrame, delim='|', header=[:CustomerKey, :Name, :Address, :NationKey, :Phone, :AcctBal, :MktSegment, :Comment, :Col9])
+    lineitem = CSV.read("Experiments/Data/TPCH_5/lineitem.tbl", DataFrame, delim='|', header=[:OrderKey, :PartKey, :SuppKey, :LineNumber, :Quantity, :ExtendedPrice, :Discount, :Tax, :ReturnFlag, :LineStatus, :ShipDate, :CommitDate, :ReceiptDate, :ShipInstruct, :ShipMode, :Comment])
+    orders = CSV.read("Experiments/Data/TPCH_5/orders.tbl", DataFrame, delim='|', header=[:OrderKey, :CustomerKey, :OrderStatus, :TotalPrice, :OrderDate, :OrderPriority, :Clerk, :ShipPriority, :Comment])
+    partsupp = CSV.read("Experiments/Data/TPCH_5/partsupp.tbl", DataFrame, delim='|', header=[:PartKey, :SuppKey, :AvailQty, :SupplyCost, :Comment])
+    part = CSV.read("Experiments/Data/TPCH_5/part.tbl", DataFrame, delim='|', header=[:PartKey, :Name, :MFGR, :Brand, :Type, :Size, :Container, :RetailPrice, :Comment])
+    supplier = CSV.read("Experiments/Data/TPCH_5/supplier.tbl", DataFrame, delim='|', header=[:SuppKey, :Name, :Address, :NationKey, :Phone, :AcctBal, :Comment])
     lineitem[!, :LineItemKey] = 1:nrow(lineitem)
     orderkey_idx = Dict(o => i for (i, o) in enumerate(unique(orders.OrderKey)))
     partkey_idx = Dict(p => i for (i, p) in enumerate(unique(part.PartKey)))
@@ -737,6 +737,58 @@ function main()
  
     # This formulation makes each row of the output a pair of line items for the same part
     # and includes information about their suppliers li_tns[s1, i1, p]
+
+    # First, we load the TPCH data
+    customer = CSV.read("Experiments/Data/TPCH/customer.tbl", DataFrame, delim='|', header=[:CustomerKey, :Name, :Address, :NationKey, :Phone, :AcctBal, :MktSegment, :Comment, :Col9])
+    lineitem = CSV.read("Experiments/Data/TPCH/lineitem.tbl", DataFrame, delim='|', header=[:OrderKey, :PartKey, :SuppKey, :LineNumber, :Quantity, :ExtendedPrice, :Discount, :Tax, :ReturnFlag, :LineStatus, :ShipDate, :CommitDate, :ReceiptDate, :ShipInstruct, :ShipMode, :Comment])
+    orders = CSV.read("Experiments/Data/TPCH/orders.tbl", DataFrame, delim='|', header=[:OrderKey, :CustomerKey, :OrderStatus, :TotalPrice, :OrderDate, :OrderPriority, :Clerk, :ShipPriority, :Comment])
+    partsupp = CSV.read("Experiments/Data/TPCH/partsupp.tbl", DataFrame, delim='|', header=[:PartKey, :SuppKey, :AvailQty, :SupplyCost, :Comment])
+    part = CSV.read("Experiments/Data/TPCH/part.tbl", DataFrame, delim='|', header=[:PartKey, :Name, :MFGR, :Brand, :Type, :Size, :Container, :RetailPrice, :Comment])
+    supplier = CSV.read("Experiments/Data/TPCH/supplier.tbl", DataFrame, delim='|', header=[:SuppKey, :Name, :Address, :NationKey, :Phone, :AcctBal, :Comment])
+    lineitem[!, :LineItemKey] = 1:nrow(lineitem)
+    orderkey_idx = Dict(o => i for (i, o) in enumerate(unique(orders.OrderKey)))
+    partkey_idx = Dict(p => i for (i, p) in enumerate(unique(part.PartKey)))
+    suppkey_idx = Dict(s => i for (i, s) in enumerate(unique(supplier.SuppKey)))
+    customerkey_idx = Dict(c => i for (i, c) in enumerate(unique(customer.CustomerKey)))
+
+    simplify_col(lineitem, :OrderKey, orderkey_idx)
+    simplify_col(lineitem, :PartKey, partkey_idx)
+    simplify_col(lineitem, :SuppKey, suppkey_idx)
+    simplify_col(orders, :OrderKey, orderkey_idx)
+    simplify_col(orders, :CustomerKey, customerkey_idx)
+    simplify_col(customer, :CustomerKey, customerkey_idx)
+    simplify_col(part, :PartKey, partkey_idx)
+    simplify_col(supplier, :SuppKey, suppkey_idx)
+
+    # Conceptually, each row of X is going to be a line item.
+    lineitem = lineitem[!, [:LineItemKey, :OrderKey, :PartKey, :SuppKey, :LineNumber, :Quantity, :ExtendedPrice, :Discount, :Tax, :ReturnFlag, :LineStatus, :ShipMode]]
+    one_hot_encode_cols!(lineitem, [:ReturnFlag, :LineStatus, :ShipMode])
+    orders = orders[!, [:OrderKey, :CustomerKey, :OrderStatus, :TotalPrice, :OrderPriority, :ShipPriority]]
+    orders.CustomerKey = orders.CustomerKey .+ 1
+    one_hot_encode_cols!(orders, [:OrderStatus, :OrderPriority, :ShipPriority])
+    customer = customer[!, [:CustomerKey, :NationKey, :AcctBal, :MktSegment]]
+    one_hot_encode_cols!(customer, [:NationKey, :MktSegment])
+    partsupp = partsupp[!, [:PartKey, :SuppKey]]
+    supplier = supplier[!, [:SuppKey, :NationKey, :AcctBal]]
+    one_hot_encode_cols!(supplier, [:NationKey])
+    part = part[!, [:PartKey, :MFGR, :Brand, :Size, :Container, :RetailPrice]]
+    one_hot_encode_cols!(part, [:MFGR, :Brand, :Container])
+    li_tns = cols_to_join_tensor(lineitem, (:PartKey, :SuppKey, :OrderKey,  :LineItemKey), (maximum(values(partkey_idx)), maximum(values(suppkey_idx)), maximum(values(orderkey_idx)), nrow(lineitem)))
+    li_tns2 = cols_to_join_tensor(lineitem, (:SuppKey, :LineItemKey, :PartKey), (maximum(values(suppkey_idx)), nrow(lineitem), maximum(values(partkey_idx))))
+    orders_x = floor.(Matrix(select(orders, Not([:OrderKey, :CustomerKey])))') .% 100
+    order_cust = cols_to_join_tensor(orders, (:CustomerKey, :OrderKey), (maximum(values(customerkey_idx)), maximum(values(orderkey_idx))))
+    customer_x = floor.(Matrix(select(customer, Not([:CustomerKey])))') .% 100
+    supplier_x = floor.(Matrix(select(supplier, Not([:SuppKey])))') .% 100
+    part_x = floor.(Matrix(select(part, Not([:PartKey])))') .% 100
+
+    x_starts = cumsum([0, size(orders_x)[1], size(customer_x)[1], size(supplier_x)[1], size(part_x)[1]])
+    x_dim = x_starts[end]
+    orders_x = align_x_dims(orders_x, x_starts[1], x_dim)
+    customer_x = align_x_dims(customer_x, x_starts[2], x_dim)
+    supplier_x = align_x_dims(supplier_x, x_starts[3], x_dim)
+    part_x = align_x_dims(part_x, x_starts[4], x_dim)
+
+    
     supplier_x = floor.(Matrix(select(supplier, Not([:SuppKey])))') .% 100
     part_x = floor.(Matrix(select(part, Not([:PartKey])))') .% 100
     x_starts = cumsum([0, size(supplier_x)[1], size(supplier_x)[1], size(part_x)[1]])
@@ -910,12 +962,15 @@ function main()
                 CSV.read("Experiments/Results/tpch_inference_python.csv", DataFrame), 
                 CSV.read("Experiments/Results/tpch_inference_polars_serial.csv", DataFrame), 
                 CSV.read("Experiments/Results/tpch_inference_polars_parallel.csv", DataFrame))
-    data[(data.Method .== "Galley"), :Method] .= "Galley (Opt)"
+    data[(data.Method .== "Finch (Sparse)"), :Method] .= "Finch (Sparse, 1 Core)"
+    data[(data.Method .== "Finch (Dense)"), :Method] .= "Finch (Dense, 1 Core)"
+    data[(data.Method .== "Pandas+Numpy"), :Method] .= "Pandas+Numpy (1 Core)"
+    data[(data.Method .== "Galley"), :Method] .= "Galley (Opt, 1 Core)"
     data[!, :RelativeOptTime] = copy(data[!, :ExecuteTime]) .+ copy(data[!, :OptTime])
     data[!, :RelativeExecTime] = copy(data[!, :ExecuteTime])
     for alg in unique(data.Algorithm)
-        data[data.Algorithm .== alg, :RelativeExecTime] = data[data.Algorithm .== alg, :RelativeExecTime] ./ data[(data.Algorithm .== alg) .& (data.Method .== "Finch (Sparse)"), :ExecuteTime]
-        data[data.Algorithm .== alg, :RelativeOptTime] = data[data.Algorithm .== alg, :RelativeOptTime] ./ data[(data.Algorithm .== alg) .& (data.Method .== "Finch (Sparse)"), :ExecuteTime]
+        data[data.Algorithm .== alg, :RelativeExecTime] = data[data.Algorithm .== alg, :RelativeExecTime] ./ data[(data.Algorithm .== alg) .& (data.Method .== "Finch (Sparse, 1 Core)"), :ExecuteTime]
+        data[data.Algorithm .== alg, :RelativeOptTime] = data[data.Algorithm .== alg, :RelativeOptTime] ./ data[(data.Algorithm .== alg) .& (data.Method .== "Finch (Sparse, 1 Core)"), :ExecuteTime]
     end
     data[!, :RelativeExecTime] = log10.(data.RelativeExecTime)
     data[!, :RelativeOptTime] = log10.(data.RelativeOptTime)
@@ -923,7 +978,7 @@ function main()
     ordered_methods = CategoricalArray(data.Method)
     alg_order = ["Covariance (SJ)", "Covariance (SQ)", "Logistic Regression (SJ)", "Logistic Regression (SQ)", "Linear Regression (SJ)", "Linear Regression (SQ)", "Neural Network (SJ)", "Neural Network (SQ)"]
     levels!(ordered_algorithms, alg_order)
-    method_order = ["Galley (Opt)", "Finch (Dense)", "Finch (Sparse)", "Pandas+Numpy", "Polars+PyTorch (1 Core)", "Polars+PyTorch (24 Core)"]
+    method_order = ["Galley (Opt, 1 Core)", "Finch (Dense, 1 Core)", "Finch (Sparse, 1 Core)", "Pandas+Numpy (1 Core)", "Polars+PyTorch (1 Core)", "Polars+PyTorch (24 Core)"]
     levels!(ordered_methods, method_order)
     gbplot = StatsPlots.groupedbar(ordered_algorithms,
                                     data.RelativeOptTime,
@@ -949,11 +1004,11 @@ function main()
     n_methods = length(unique(ordered_methods))
     left_edges = [i for i in 0:n_groups-1]
     first_pos = left_edges .+ 1/n_methods
-    galley_data = data[data.Method .== "Galley (Opt)", :]
+    galley_data = data[data.Method .== "Galley (Opt, 1 Core)", :]
     galley_data = collect(zip(galley_data.Algorithm, galley_data.RelativeExecTime))
     sort!(galley_data, by = (x)->[i for (i, alg) in enumerate(alg_order) if alg == x[1]][1])
     exec_time = [x[2] for x in galley_data]
-    bar!(gbplot, first_pos, exec_time, bar_width=0.8/n_methods, fillrange=-4, label="Galley (Exec)", color=palette(:default)[1])
+    bar!(gbplot, first_pos, exec_time, bar_width=0.8/n_methods, fillrange=-4, label="Galley (Exec, 1 Core)", color=palette(:default)[1])
     hline!([0], color=:grey, lw=2, linestyle=:dash; label="")
     savefig(gbplot, "Experiments/Figures/tpch_inference.png")
 end

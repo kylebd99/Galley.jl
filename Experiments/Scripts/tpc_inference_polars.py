@@ -1,5 +1,5 @@
 
-parallel = True
+parallel = False
 
 import os 
 if not parallel:
@@ -80,8 +80,84 @@ def nn_2(lineitem, part, supplier, W1, W2, W3):
 
 
 def main():
-    num_cores = 64 if parallel else 1
+    num_cores = 24 if parallel else 1
     with threadpool_limits(limits=num_cores):
+        customer = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/customer.tbl", sep="|", names=["CustomerKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "MktSegment", "Comment", "Col9"])
+        lineitem = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/lineitem.tbl", sep="|", names=["OrderKey", "PartKey", "SuppKey", "LineNumber", "Quantity", "ExtendedPrice", "Discount", "Tax", "ReturnFlag", "LineStatus", "ShipDate", "CommitDate", "ReceiptDate", "ShipInstruct", "ShipMode", "Comment", "Col9"])
+        lineitem["LineItemKey"] = range(1, len(lineitem)+1) 
+        orders = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/orders.tbl", sep="|", names=["OrderKey", "CustomerKey", "OrderStatus", "TotalPrice", "OrderDate", "OrderPriority", "Clerk", "ShipPriority", "Comment", "Extra"])
+        partsupp = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/partsupp.tbl", sep="|", names=["PartKey", "SuppKey", "AvailQty", "SupplyCost", "Comment", "Col9"])
+        part = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/part.tbl", sep="|", names=["PartKey", "Name", "MFGR", "Brand", "Type", "Size", "Container", "RetailPrice", "Comment", "Col9"])
+        supplier = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/supplier.tbl", sep="|", names=["SuppKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "Comment", "Col9"])
+
+        simplify_col(lineitem, "OrderKey")
+        simplify_col(lineitem, "PartKey")
+        simplify_col(lineitem, "SuppKey")
+        simplify_col(orders, "OrderKey")
+        simplify_col(orders, "CustomerKey")
+        simplify_col(customer, "CustomerKey")
+        simplify_col(part, "PartKey")
+        simplify_col(supplier, "SuppKey")
+
+        lineitem = pl.from_pandas(lineitem[["LineItemKey", "OrderKey", "PartKey", "SuppKey"]])
+        orders = orders[["OrderKey", "CustomerKey", "OrderStatus", "TotalPrice", "OrderPriority", "ShipPriority"]]
+        orders = pl.from_pandas(one_hot_encode_cols(orders, ["OrderStatus", "OrderPriority", "ShipPriority"]))
+        customer = customer[["CustomerKey", "NationKey", "AcctBal", "MktSegment"]]
+        customer = pl.from_pandas(one_hot_encode_cols(customer, ["NationKey", "MktSegment"]))
+        partsupp = pl.from_pandas(partsupp[["PartKey", "SuppKey"]])
+        supplier = supplier[["SuppKey", "NationKey", "AcctBal"]]
+        supplier = pl.from_pandas(one_hot_encode_cols(supplier, ["NationKey"]))
+        part = part[["PartKey", "MFGR", "Brand", "Size", "Container", "RetailPrice"]]
+        part = pl.from_pandas(one_hot_encode_cols(part, ["MFGR", "Brand", "Container"]))
+        print(lineitem)
+        theta = np.rand(144, dtype=float)
+        W1 = np.rand(144, 25, dtype=float)
+        W2 = np.rand(25, 25, dtype=float)
+        W3 = np.rand(25, dtype=float)
+
+        np_lr_time = 0
+        np_log_time = 0
+        np_cov_time = 0
+        np_nn_time = 0
+        n = 3
+        for iter in range(0, n + 1):
+            if iter == 1:
+                np_lr_time = 0
+                np_log_time = 0
+                np_cov_time = 0
+                np_nn_time = 0
+            
+            np_start = time.time()
+            lr_1(lineitem, orders, customer, supplier, part, theta)
+            np_end = time.time()
+            np_lr_time = np_lr_time + np_end-np_start
+            print(np_end-np_start)
+
+            np_start = time.time()
+            log_1(lineitem, orders, customer, supplier, part, theta)
+            np_end = time.time()
+            np_log_time = np_log_time + np_end-np_start
+            print(np_end-np_start)
+
+            np_start = time.time()
+            cov_1(lineitem, orders, customer, supplier, part)
+            np_end = time.time()
+            np_cov_time = np_cov_time + np_end-np_start
+            print(np_end-np_start)
+
+            np_start = time.time()
+            nn_1(lineitem, orders, customer, supplier, part, W1, W2, W3)
+            np_end = time.time()
+            np_nn_time = np_nn_time + np_end-np_start
+            print(np_end-np_start)
+        
+        np_lr_time = np_lr_time / n
+        np_log_time = np_log_time / n
+        np_cov_time = np_cov_time / n
+        np_nn_time = np_nn_time / n
+
+
+
         customer = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/customer.tbl", sep="|", names=["CustomerKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "MktSegment", "Comment", "Col9"])
         lineitem = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/lineitem.tbl", sep="|", names=["OrderKey", "PartKey", "SuppKey", "LineNumber", "Quantity", "ExtendedPrice", "Discount", "Tax", "ReturnFlag", "LineStatus", "ShipDate", "CommitDate", "ReceiptDate", "ShipInstruct", "ShipMode", "Comment", "Col9"])
         lineitem["LineItemKey"] = range(1, len(lineitem)+1) 
@@ -109,61 +185,21 @@ def main():
         supplier = pl.from_pandas(one_hot_encode_cols(supplier, ["NationKey"]))
         part = part[["PartKey", "MFGR", "Brand", "Size", "Container", "RetailPrice"]]
         part = pl.from_pandas(one_hot_encode_cols(part, ["MFGR", "Brand", "Container"]))
-        print(lineitem)
-        theta = np.rand(144, dtype=float)
-        W1 = np.rand(144, 25, dtype=float)
-        W2 = np.rand(25, 25, dtype=float)
-        W3 = np.rand(25, dtype=float)
         theta_sj = np.rand(131, dtype=float)
-
         W1_sj = np.rand(131, 25, dtype=float)
         W2_sj = np.rand(25, 25, dtype=float)
         W3_sj = np.rand(25, dtype=float)
 
-        np_lr_time = 0
-        np_log_time = 0
-        np_cov_time = 0
-        np_nn_time = 0
         np_lr_time2 = 0
         np_log_time2 = 0
         np_cov_time2 = 0
         np_nn_time2 = 0
-        n = 3
         for iter in range(0, n + 1):
             if iter == 1:
-                np_lr_time = 0
-                np_log_time = 0
-                np_cov_time = 0
-                np_nn_time = 0
                 np_lr_time2 = 0
                 np_log_time2 = 0
                 np_cov_time2 = 0
                 np_nn_time2 = 0
-            
-            np_start = time.time()
-            lr_1(lineitem, orders, customer, supplier, part, theta)
-            np_end = time.time()
-            np_lr_time = np_lr_time + np_end-np_start
-            print(np_end-np_start)
-
-            np_start = time.time()
-            log_1(lineitem, orders, customer, supplier, part, theta)
-            np_end = time.time()
-            np_log_time = np_log_time + np_end-np_start
-            print(np_end-np_start)
-
-            np_start = time.time()
-            cov_1(lineitem, orders, customer, supplier, part)
-            np_end = time.time()
-            np_cov_time = np_cov_time + np_end-np_start
-            print(np_end-np_start)
-
-            np_start = time.time()
-            nn_1(lineitem, orders, customer, supplier, part, W1, W2, W3)
-            np_end = time.time()
-            np_nn_time = np_nn_time + np_end-np_start
-            print(np_end-np_start)
-
             np_start = time.time()
             lr_2(lineitem, part, supplier, theta_sj)
             np_end = time.time()
@@ -188,10 +224,7 @@ def main():
             np_nn_time2 = np_nn_time2 + np_end-np_start
             print(np_end-np_start)
 
-        np_lr_time = np_lr_time / n
-        np_log_time = np_log_time / n
-        np_cov_time = np_cov_time / n
-        np_nn_time = np_nn_time / n
+
         np_lr_time2 = np_lr_time2 / n
         np_log_time2 = np_log_time2 / n
         np_cov_time2 = np_cov_time2 / n
