@@ -1,0 +1,17 @@
+*.o
+dbgen
+qgen
+*.tbl
+*.bkp
+*.swp
+Makefile
+makefile
+*~
+\#\#*
+gmon.out
+CMakeFiles
+cmake_install.cmake
+CMakeCache.txt
+.cproject
+.project
+config.h
