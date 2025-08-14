@@ -40,3 +40,5 @@ bash run_bfs_experiments.sh
 
 These experiments all produce their graph in Experiments/Figures.
 
+Note: Some of these experiments require significant memory to run. The machine that it was originally evaluated on had 256 GB of memory. This is necessary for evaluating the pandas/numpy and polars/pytorch comparisons in the join inference experiments.
+
