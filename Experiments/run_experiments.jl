@@ -84,6 +84,7 @@ function run_experiments(experiment_params::Vector{ExperimentParams}; use_new_pr
         while isready(results_channel)
             push!(results, take!(results_channel))
         end
+        mkpath("Experiments/Results")
         results_filename = "Experiments/Results/" * param_to_results_filename(experiment)
         writedlm(results_filename, results, ',')
 

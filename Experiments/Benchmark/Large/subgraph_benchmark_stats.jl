@@ -1,7 +1,7 @@
 include("../../Experiments.jl")
 
 
-datasets = [human, aids, yeast_lite, dblp_lite,youtube_lite]
+datasets = [human, aids, yeast_lite, dblp_lite, youtube_lite]
 experiments = ExperimentParams[]
 for data in datasets
     push!(experiments, ExperimentParams(workload=data, faq_optimizer=pruned; stats_type=NaiveStats, warm_start=true, description="Uniform Estimator", timeout=600))
