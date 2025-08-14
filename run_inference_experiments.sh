@@ -5,10 +5,10 @@ mv *.tbl ../Experiments/Data/TPCH
 mv *.tbl ../Experiments/Data/TPCH_5 
 cd ..
 
-python "Experiments/Scripts/tpch_inference_polars.py" --parallel true
+poetry run python "Experiments/Scripts/tpch_inference_polars.py" --parallel true
 
-python "Experiments/Scripts/tpch_inference_polars.py" --parallel false
+poetry run python "Experiments/Scripts/tpch_inference_polars.py" --parallel false
 
-python "Experiments/Scripts/tpch_inference_pandas.py"
+poetry run python "Experiments/Scripts/tpch_inference_pandas.py"
 
 julia --project=. "Experiments/Scripts/tpch_inference.jl"
