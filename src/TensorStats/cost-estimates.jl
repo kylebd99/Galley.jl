@@ -8,7 +8,7 @@ const RandomWriteCost = 2
 
 const ComputeCost = 1
 const AllocateCost = 10
-const DenseAllocateCost = .5
+const DenseAllocateCost = 1
 const SparseAllocateCost = 60
 
 # We estimate the prefix cost based on the number of iterations in that prefix.

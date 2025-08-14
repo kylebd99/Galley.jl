@@ -360,7 +360,7 @@ end
 
 function is_dense(mat_stats, mat_size)
     sparsity = mat_size / get_dim_space_size(mat_stats, get_index_set(mat_stats))
-    return sparsity > .5
+    return sparsity > .15
 end
 
 # Returns the cost of reducing out an index

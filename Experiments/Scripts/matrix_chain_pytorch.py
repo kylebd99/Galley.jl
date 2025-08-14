@@ -1,8 +1,9 @@
 import time
 import numpy as np
+import scipy.sparse as sp
 import csv
 import torch
-num_cores = 8
+num_cores = 1
 torch.set_num_threads(num_cores)
 
 def mat_chain(A, B, C):
@@ -15,27 +16,26 @@ def mat_elementwise(A, B, C):
     return A * B * C
 
 N = 2000
-A_density = .5
-B_density = .5
-densities = [.1, .01, .001, .0001, .00001, .000001]
+A_density = .1
+B_density = .1
+densities = [.1, .01, .001, .0001, .00001]
 # 1 Core: 1.9733909130096436
 # 4 Cores: 0.5908640384674072
 # 8 Cores: 0.46388835906982423
 # 16 Cores: 0.35561423301696776
 
-densities = [.001]
+A = torch.from_numpy((sp.random(N,N, A_density)).astype(float).todense()).to_sparse_csc()
+B = torch.from_numpy((sp.random(N,N, B_density)).astype(float).todense()).to_sparse_csc()
+A_dense = torch.from_numpy(np.random.rand(N,N).astype(float))
+B_dense = torch.from_numpy(np.random.rand(N,N).astype(float))
+C_dense = torch.from_numpy((np.random.rand(N, int(N/400))).astype(float))
 forward_times = []
 backward_times =[]
 sum_times = []
 elementwise_times = []
 dense_times = []
 for d in densities:
-    A = torch.from_numpy(np.astype(np.random.rand(N,N) < A_density, float)).to_sparse_csc()
-    B = torch.from_numpy(np.astype(np.random.rand(N,N) < B_density, float)).to_sparse_csc()
-    A_dense = torch.from_numpy(np.astype(np.random.rand(N,N), float))
-    B_dense = torch.from_numpy(np.astype(np.random.rand(N,N), float))
-    C = torch.from_numpy(np.astype(np.random.rand(N,N) < d, float)).to_sparse_csc()
-    C_dense = torch.from_numpy(np.astype(np.random.rand(N, int(N/400)), float))
+    C = torch.from_numpy(sp.random(N,N, d).astype(float).todense()).to_sparse_csc()
 
     scripted_mat_chain = torch.jit.script(mat_chain, example_inputs=[(A, B, C)])
     scripted_mat_chain_back = torch.jit.script(mat_chain_back, example_inputs=[(A, B, C)])
@@ -98,9 +98,9 @@ for d in densities:
     print("Elementwise Time: ", avg_time_elementwise)
     print("Dense Time: ", avg_time_dense)
 
-method = "PyTorch (Serial)"
+method = "PyTorch (1 Core)"
 if num_cores > 1:
-    method = "PyTorch (Parallel)"
+    method = "PyTorch (24 Core)"
 
 data = [("Method", "Algorithm", "Sparsity", "Runtime")]
 for i in range(len(densities)):
