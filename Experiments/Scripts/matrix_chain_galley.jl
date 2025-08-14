@@ -5,17 +5,21 @@ using CSV
 
 function main()
     N = 2000
-    densities = [.1, .01, .001, .0001, .00001, .000001]
+    A_Sparsity = .1
+    B_Sparsity = .1
+    densities = [.1, .01, .001, .0001, .00001]
+#    densities = [ .001, ]
     forward_times = []
     backward_times =[]
     sum_times = []
     elementwise_times = []
     dense_times = []
+    A = Tensor(Dense(SparseList(Element(0.0))), fsprand(N, N, A_Sparsity))
+    B = Tensor(Dense(SparseList(Element(0.0))), fsprand(N, N, B_Sparsity))
+    A_dense = Tensor(Dense(Dense(Element(0.0))), rand(N, N))
+    B_dense = Tensor(Dense(Dense(Element(0.0))), rand(N, N))
+    C_dense = Tensor(Dense(Dense(Element(0.0))), rand(N, Int(floor(N/400))))
     for d in densities
-        A = Tensor(Dense(SparseList(Element(0.0))), fsprand(N, N, .5))
-        B = Tensor(Dense(SparseList(Element(0.0))), fsprand(N, N, .5))
-        A_dense = Tensor(Dense(Dense(Element(0.0))), rand(N, N))
-        B_dense = Tensor(Dense(Dense(Element(0.0))), rand(N, N))
         C = Tensor(Dense(SparseList(Element(0.0))), fsprand(N, N, d))
         n_reps = 7
         avg_time_forward = 0
@@ -38,7 +42,7 @@ function main()
             galley(E1, verbose=verbosity, faq_optimizer=pruned)
             end_time = time()
             avg_time_forward += end_time - start_time
-            
+
             E2 = Query(:E2,  Mat(:i, :l, Σ(:j, :k, MapJoin(*, Input(C, :i, :j), Input(B, :j, :k), Input(A, :k, :l)))))
             start_time = time()
             galley(E2, verbose=verbosity, faq_optimizer=pruned)
@@ -58,7 +62,6 @@ function main()
             avg_time_elementwise += end_time - start_time
 
             # This example uses a non-square matrix to compare dense matmul chains.
-            C_dense = Tensor(Dense(Dense(Element(0.0))), rand(N, Int(floor(N/400))))
             E5 = Query(:E5,  Mat(:i, :l, Σ(:j, :k, MapJoin(*, Input(A_dense, :i, :j), Input(B_dense, :j, :k), Input(C_dense, :k, :l)))))
             start_time = time()
             galley(E5, verbose=verbosity, faq_optimizer=pruned)
@@ -75,7 +78,7 @@ function main()
         push!(sum_times, avg_time_sum)
         push!(elementwise_times, avg_time_elementwise)
         push!(dense_times, avg_time_dense)
-        println("Density: ", d)
+        println("Sparsity: ", d)
         println("Forward Time: ", avg_time_forward)
         println("Backward Time: ", avg_time_backward)
         println("Sum Time: ", avg_time_sum)
@@ -89,11 +92,11 @@ function main()
     println(dense_times)
     data = []
     for i in eachindex(densities)
-        push!(data, (Method="Galley", Algorithm="ABC", Sparsity=densities[i], Runtime=forward_times[i]))
-        push!(data, (Method="Galley", Algorithm="CBA", Sparsity=densities[i], Runtime=backward_times[i]))
-        push!(data, (Method="Galley", Algorithm="SUM(ABC)", Sparsity=densities[i], Runtime=sum_times[i]))
-        push!(data, (Method="Galley", Algorithm="A*B*C", Sparsity=densities[i], Runtime=elementwise_times[i]))
-        push!(data, (Method="Galley", Algorithm="ABC Rectangular", Sparsity=densities[i], Runtime=elementwise_times[i]))
+        push!(data, (Method="Galley (1 Core)", Algorithm="ABC", Sparsity=densities[i], Runtime=forward_times[i]))
+        push!(data, (Method="Galley (1 Core)", Algorithm="CBA", Sparsity=densities[i], Runtime=backward_times[i]))
+        push!(data, (Method="Galley (1 Core)", Algorithm="SUM(ABC)", Sparsity=densities[i], Runtime=sum_times[i]))
+        push!(data, (Method="Galley (1 Core)", Algorithm="A*B*C", Sparsity=densities[i], Runtime=elementwise_times[i]))
+        push!(data, (Method="Galley (1 Core)", Algorithm="ABC Rectangular", Sparsity=densities[i], Runtime=elementwise_times[i]))
     end
     CSV.write("Experiments/Results/mat_exps_galley.csv", DataFrame(data))
 end
@@ -110,35 +113,43 @@ data = DataFrame(CSV.File("Experiments/Results/mat_exps_galley.csv"))
 append!(data, DataFrame(CSV.File("Experiments/Results/mat_exps_pytorch_serial.csv")), promote=true)
 append!(data, DataFrame(CSV.File("Experiments/Results/mat_exps_pytorch_parallel.csv")), promote=true)
 
-abc_plt = @df data[data.Algorithm .=="ABC", :] bar([i%6 + floor(i/6)/4 for i in 0:17], :Runtime, group=:Method,
-                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25, 5.25], [".1", ".01", ".001", ".0001", ".00001", ".000001"]),
-                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 100],
-                                        xflip=false, lw=2, xtickfontsize=12,  bar_width=.25,
-                                        ytickfontsize=12, legendfontsize=12, legend=:topright,
-                                        xlabel="Density of C", ylabel="Runtime", title="Matrix Chain Multiplication (ABC)")
+abc_plt = @df data[data.Algorithm .=="ABC", :] bar([i%5 + floor(i/5)/4 for i in 0:17], :Runtime, group=:Method,
+                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25], [".1", ".01", ".001", ".0001", ".00001"]),
+                                        yticks=[10^-3, 10^-2, .1, 1, 10, 100],
+                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 20],
+                                        xflip=false, lw=2, xtickfontsize=13,  bar_width=.25, xguidefontsize=15, yguidefontsize=15,
+                                        ytickfontsize=14, legendfontsize=14, legend=:topright,
+                                        title="ABC",
+                                        xlabel="Sparsity of C", ylabel="Execution Time (s)")
 savefig(abc_plt, "Experiments/Figures/mat_chain_abc.png")
 
 
-cba_plt = @df data[data.Algorithm .=="CBA", :] bar([i%6 + floor(i/6)/4 for i in 0:17], :Runtime, group=:Method,
-                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25, 5.25], [".1", ".01", ".001", ".0001", ".00001", ".000001"]),
-                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 100],
-                                        xflip=false, lw=2, xtickfontsize=12,  bar_width=.25,
-                                        ytickfontsize=12, legendfontsize=12, legend=:topright,
-                                        xlabel="Density of C", ylabel="Runtime", title="Matrix Chain Multiplication (CBA)")
+cba_plt = @df data[data.Algorithm .=="CBA", :] bar([i%5 + floor(i/5)/4 for i in 0:17], :Runtime, group=:Method,
+                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25], [".1", ".01", ".001", ".0001", ".00001"]),
+                                        yticks=[10^-3, 10^-2, .1, 1, 10, 100],
+                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 20],
+                                        xflip=false, lw=2, xtickfontsize=13,  bar_width=.25, xguidefontsize=15, yguidefontsize=15,
+                                        ytickfontsize=14, legendfontsize=14, legend=:topright,
+                                        title="CBA",
+                                        xlabel="Sparsity of C", ylabel="Execution Time (s)")
 savefig(cba_plt, "Experiments/Figures/mat_chain_cba.png")
 
-sum_plt = @df data[data.Algorithm .=="SUM(ABC)", :] bar([i%6 + floor(i/6)/4 for i in 0:17], :Runtime, group=:Method,
-                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25, 5.25], [".1", ".01", ".001", ".0001", ".00001", ".000001"]),
-                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 100],
-                                        xflip=false, lw=2, xtickfontsize=12,  bar_width=.25,
-                                        ytickfontsize=12, legendfontsize=12, legend=:topright,
-                                        xlabel="Density of C", ylabel="Runtime", title="Sum of Matrix Chain (SUM(ABC))")
+sum_plt = @df data[data.Algorithm .=="SUM(ABC)", :] bar([i%5 + floor(i/5)/4 for i in 0:17], :Runtime, group=:Method,
+                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25], [".1", ".01", ".001", ".0001", ".00001"]),
+                                        yticks=[10^-3, 10^-2, .1, 1, 10, 100],
+                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 20],
+                                        xflip=false, lw=2, xtickfontsize=13,  bar_width=.25, xguidefontsize=15, yguidefontsize=15,
+                                        ytickfontsize=14, legendfontsize=14, legend=:topright,
+                                        title="SUM(ABC)",
+                                        xlabel="Sparsity of C", ylabel="Execution Time (s)")
 savefig(sum_plt, "Experiments/Figures/mat_chain_sum.png")
 
-sum_plt = @df data[data.Algorithm .=="A*B*C", :] bar([i%6 + floor(i/6)/4 for i in 0:17], :Runtime, group=:Method,
-                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25, 5.25], [".1", ".01", ".001", ".0001", ".00001", ".000001"]),
-                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 10],
-                                        xflip=false, lw=2, xtickfontsize=12,  bar_width=.25,
-                                        ytickfontsize=12, legendfontsize=12, legend=:topright,
-                                        xlabel="Density of C", ylabel="Runtime", title="Elementwise Matrix Multiplication (A*B*C)")
+sum_plt = @df data[data.Algorithm .=="A*B*C", :] bar([i%5 + floor(i/5)/4 for i in 0:17], :Runtime, group=:Method,
+                                        xticks=([.25, 1.25, 2.25, 3.25, 4.25], [".1", ".01", ".001", ".0001", ".00001"]),
+                                        yticks=[10^-3, 10^-2, .1, 1, 10],
+                                        yscale=:log10, fillrange = 10^(-3), ylims=[10^(-3), 20],
+                                        xflip=false, lw=2, xtickfontsize=13,  bar_width=.25, xguidefontsize=15, yguidefontsize=15,
+                                        ytickfontsize=14, legendfontsize=14, legend=:topright,
+                                        title="A*B*C",
+                                        xlabel="Sparsity of C", ylabel="Execution Time (s)")
 savefig(sum_plt, "Experiments/Figures/mat_chain_elementwise.png")

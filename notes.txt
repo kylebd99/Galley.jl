@@ -1,0 +1,47 @@
+
+IDX SET: Set([:j, :k, :i]) REDUCE IDX: j                                                                                                                                                            
+X: Set{Symbol}() Y: Set([:j, :i]) d: 399808                                                                                                                                                         
+X: Set([:j]) Y: Set([:i]) d: 248                                                                                                                                                                    
+X: Set([:j]) Y: Set([:k]) d: 247                                                                                                                                                                    
+X: Set([:i]) Y: Set([:j]) d: 257                                                                                                                                                                    
+X: Set{Symbol}() Y: Set([:i]) d: 2000                                                                                                                                                               
+X: Set{Symbol}() Y: Set([:k]) d: 2000                                                                                                                                                               
+X: Set{Symbol}() Y: Set([:j, :k]) d: 399932                                                                                                                                                         
+X: Set([:k]) Y: Set([:j]) d: 252                                                                                                                                                                    
+X: Set{Symbol}() Y: Set([:j]) d: 2000                                                                                                                                                               
+Estimated NNZ: 98752576                                                                                                                                                                             
+Mat Cost: 4000000                                                                                                                                                                                   
+Comp Cost: 296257728 
+
+IDX SET: Set([i, j, l]) REDUCE IDX: j                                                                                                                                                            
+X: Set{Symbol}() Y: Set([:l]) d: 1724                                                                                                                                                               
+X: Set{Symbol}() Y: Set([:j, :k]) d: 399932                                                                                                                                                         
+X: Set{Symbol}() Y: Set([:l, :k]) d: 3949                                                                                                                                                           
+X: Set([:l]) Y: Set([:k]) d: 8                                                                                                                                                                      
+X: Set([:k]) Y: Set([:l]) d: 8                                                                                                                                                                      
+X: Set{Symbol}() Y: Set([:i]) d: 2000                                                                                                                                                               
+X: Set([:i]) Y: Set([:j]) d: 257                                                                                                                                                                    
+X: Set{Symbol}() Y: Set([:k]) d: 1730                                                                                                                                                               
+X: Set([:k]) Y: Set([:j]) d: 252                                                                                                                                                                    
+X: Set([:j]) Y: Set([:k]) d: 247                                                                                                                                                                    
+X: Set([:j]) Y: Set([:i]) d: 248                                                                                                                                                                    
+X: Set{Symbol}() Y: Set([:j]) d: 2000                                                                                                                                                               
+X: Set{Symbol}() Y: Set([:j, :i]) d: 399808  
+Estimated NNZ: 246796704 
+
+IDX SET: Set([i, k, l]) REDUCE IDX: k
+X: Set{Symbol}() Y: Set([:l]) d: 1724
+X: Set{Symbol}() Y: Set([:j, :k]) d: 399932
+X: Set{Symbol}() Y: Set([:l, :k]) d: 3949
+X: Set([:l]) Y: Set([:k]) d: 8
+X: Set([:k]) Y: Set([:l]) d: 8
+X: Set{Symbol}() Y: Set([:i]) d: 2000
+X: Set([:i]) Y: Set([:j]) d: 257
+X: Set{Symbol}() Y: Set([:k]) d: 1730
+X: Set([:k]) Y: Set([:j]) d: 252
+X: Set([:j]) Y: Set([:k]) d: 247
+X: Set([:j]) Y: Set([:i]) d: 248
+X: Set{Symbol}() Y: Set([:j]) d: 2000
+X: Set{Symbol}() Y: Set([:j, :i]) d: 399808
+Estimated NNZ: 7898000  
+

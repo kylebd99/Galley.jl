@@ -21,7 +21,7 @@ function select_output_format(output_stats::TensorStats,
         # We prefer to be conservative on formats so we scale down the sparsity a bit
         approx_sparsity = approx_nnz_per / get_dim_size(output_stats, prefix[1])
         dense_memory_footprint = prev_nnz * get_dim_size(output_stats, prefix[1])
-        if approx_sparsity > .1 && dense_memory_footprint < 3*10^10
+        if approx_sparsity > .15 && dense_memory_footprint < 3*10^10
 #            if get_dim_space_size(output_stats, Set(prefix)) > 10^10
 #                throw(OutOfMemoryError())
 #            end

@@ -132,7 +132,7 @@ function execute_galley_query_umbra(query::PlanNode, use_parallel=false)
     result = columntable(execute(conn, sql_query))
     execute_start = time() 
     result = columntable(execute(conn, sql_query))
-    execute_time = time()-execute_start - opt_time
+    execute_time = time() - execute_start - opt_time
 
 
 #    for table_name in table_names

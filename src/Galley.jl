@@ -71,7 +71,7 @@ include("ExecutionEngine/ExecutionEngine.jl")
 # with the leaves being Input(tns, idxs...), Alias(name, idxs...), or Value(v) where name refers
 # to the results of a previous query.
 function galley(input_queries::Vector{PlanNode};
-                    faq_optimizer::FAQ_OPTIMIZERS=greedy,
+                    faq_optimizer::FAQ_OPTIMIZERS=pruned,
                     ST=DCStats,
                     dbconn::Union{DuckDB.DB, Nothing}=nothing,
                     update_cards=true,
@@ -232,7 +232,7 @@ function galley(input_queries::Vector{PlanNode};
 end
 
 function galley(input_query::PlanNode;
-                    faq_optimizer::FAQ_OPTIMIZERS=greedy,
+                    faq_optimizer::FAQ_OPTIMIZERS=pruned,
                     ST=DCStats,
                     dbconn::Union{DuckDB.DB, Nothing}=nothing,
                     update_cards=true,

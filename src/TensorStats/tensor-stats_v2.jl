@@ -224,6 +224,11 @@ end
     dcs::Set{DC}
 end
 
+function print_dcs(stat::DCStats)
+    for dc in stat.dcs
+        println("X: $(bitset_to_idxs(stat, dc.X)) Y: $(bitset_to_idxs(stat, dc.Y)) d: $(dc.d)")
+    end
+end
 
 copy_stats(stat::DCStats) = DCStats(copy_def(stat.def), copy(stat.idx_2_int), copy(stat.int_2_idx),  Set{DC}(dc for dc in stat.dcs))
 DCStats(x::Number) = DCStats(TensorDef(x::Number), Dict{IndexExpr, Int}(), Dict{Int, IndexExpr}(), Set{DC}())

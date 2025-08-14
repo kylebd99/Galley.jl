@@ -1,3 +1,4 @@
+using LibPQ
 function load_worker()
     println("Spawning Worker")
     worker_pid = addprocs(1)[1]
@@ -25,6 +26,14 @@ function run_experiments(experiment_params::Vector{ExperimentParams}; use_new_pr
         worker_pid = -1
         cur_query = 1
         f = nothing
+        if experiment.use_umbra
+            kill_command = `pkill umbra-server -9`
+            print(run(kill_command; wait=false))
+            sleep(10)
+            restart_command = `docker run -v umbra-db:/var/db -p 5432:5432 umbradb/umbra:latest`
+            print(run(restart_command; wait=false))
+            sleep(160)
+        end
         while !exp_finished
             if use_new_processes
                 if worker_pid == -1
@@ -38,7 +47,7 @@ function run_experiments(experiment_params::Vector{ExperimentParams}; use_new_pr
             finished = false
             last_result = time()
             while !finished
-                sleep(.01)
+                sleep(.1)
                 if isready(results_channel)
                     push!(results, take!(results_channel))
                     cur_query += 1
@@ -50,6 +59,14 @@ function run_experiments(experiment_params::Vector{ExperimentParams}; use_new_pr
                 end
                 if ((time()-last_result) > experiment.timeout) && (time() - load_start > 200)
                     println("REMOVING WORKER")
+                    if experiment.use_umbra
+                        kill_command = `pkill umbra-server -9`
+                        print(run(kill_command; wait=false))
+                        sleep(10)
+                        restart_command = `docker run -v umbra-db:/var/db -p 5432:5432 umbradb/umbra:latest`
+                        print(run(restart_command; wait=false))
+                        sleep(160)
+                    end
                     interrupt(worker_pid)
                     rmprocs(worker_pid)
                     num_attempted, num_completed, num_correct, num_with_values, exp_finished = take!(status_channel)
