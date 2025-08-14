@@ -1,5 +1,8 @@
 
-parallel = False
+import argparse 
+parser = argparse.ArgumentParser(description="Matrix chain benchmarks (PyTorch)")
+parser.add_argument("--parallel", "-p", type=bool, default=True, help="Whether to run in parallel")
+parallel = parser.parse_args().parallel
 
 import os 
 if not parallel:

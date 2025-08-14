@@ -3,7 +3,11 @@ import numpy as np
 import scipy.sparse as sp
 import csv
 import torch
-num_cores = 1
+import argparse
+parser = argparse.ArgumentParser(description="Matrix chain benchmarks (PyTorch)")
+parser.add_argument("--num-cores", "-j", type=int, default=1, help="Number of CPU threads to use")
+num_cores = parser.parse_args().num_cores
+
 torch.set_num_threads(num_cores)
 
 def mat_chain(A, B, C):

@@ -11,7 +11,7 @@ for data in datasets
     push!(experiments, ExperimentParams(workload=data, faq_optimizer=naive; stats_type=NaiveStats, max_kernel_size=4, use_duckdb=true, description="DuckDB", timeout=600))
 end
 
-#run_experiments(experiments; use_new_processes=true)
+run_experiments(experiments; use_new_processes=true)
 colors = [palette(:default)[1] palette(:default)[6] palette(:default)[10] palette(:default)[7]  palette(:lajolla, 10)[4]  palette(:lajolla, 10)[5]]
 fillstyles = vcat([[nothing, nothing, nothing, nothing, nothing, :/] for i in 1:100]...)
 fillstyles = [nothing, nothing, nothing, nothing, nothing, :/]

@@ -9,10 +9,10 @@ using Plots
 using DuckDB
 using Galley
 using Galley: FAQ_OPTIMIZERS, relabel_input, reindex_stats, fill_table
-include("/local1/kdeeds/Galley.jl/Experiments/experiment_params.jl")
-include("/local1/kdeeds/Galley.jl/Experiments/subgraph_workload.jl")
-include("/local1/kdeeds/Galley.jl/Experiments/load_workload.jl")
-include("/local1/kdeeds/Galley.jl/Experiments/subgraph_sql.jl")
+include("experiment_params.jl")
+include("subgraph_workload.jl")
+include("load_workload.jl")
+include("subgraph_sql.jl")
 
 
 function clear_channel(c)
