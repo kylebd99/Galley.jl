@@ -81,17 +81,19 @@ def nn_2(lineitem, part, supplier, W1, W2, W3):
     h2 = np.maximum(np.scalar_tensor(0), np.matmul(h1, W2))
     return expit(np.matmul(h2, W3))
 
-
+data_directory_0_25 = os.path.join(os.path.dirname(__file__), "..", "Data", "TPCH")
+data_directory_5 = os.path.join(os.path.dirname(__file__), "..", "Data", "TPCH_5")
+results_directory = os.path.join(os.path.dirname(__file__), "..", "Results")
 def main():
     num_cores = 24 if parallel else 1
     with threadpool_limits(limits=num_cores):
-        customer = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/customer.tbl", sep="|", names=["CustomerKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "MktSegment", "Comment", "Col9"])
-        lineitem = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/lineitem.tbl", sep="|", names=["OrderKey", "PartKey", "SuppKey", "LineNumber", "Quantity", "ExtendedPrice", "Discount", "Tax", "ReturnFlag", "LineStatus", "ShipDate", "CommitDate", "ReceiptDate", "ShipInstruct", "ShipMode", "Comment", "Col9"])
+        customer = pd.read_csv(os.path.join(data_directory_5, "customer.tbl"), sep="|", names=["CustomerKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "MktSegment", "Comment", "Col9"])
+        lineitem = pd.read_csv(os.path.join(data_directory_5, "lineitem.tbl"), sep="|", names=["OrderKey", "PartKey", "SuppKey", "LineNumber", "Quantity", "ExtendedPrice", "Discount", "Tax", "ReturnFlag", "LineStatus", "ShipDate", "CommitDate", "ReceiptDate", "ShipInstruct", "ShipMode", "Comment", "Col9"])
         lineitem["LineItemKey"] = range(1, len(lineitem)+1) 
-        orders = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/orders.tbl", sep="|", names=["OrderKey", "CustomerKey", "OrderStatus", "TotalPrice", "OrderDate", "OrderPriority", "Clerk", "ShipPriority", "Comment", "Extra"])
-        partsupp = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/partsupp.tbl", sep="|", names=["PartKey", "SuppKey", "AvailQty", "SupplyCost", "Comment", "Col9"])
-        part = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/part.tbl", sep="|", names=["PartKey", "Name", "MFGR", "Brand", "Type", "Size", "Container", "RetailPrice", "Comment", "Col9"])
-        supplier = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH_5/supplier.tbl", sep="|", names=["SuppKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "Comment", "Col9"])
+        orders = pd.read_csv(os.path.join(data_directory_5, "orders.tbl"), sep="|", names=["OrderKey", "CustomerKey", "OrderStatus", "TotalPrice", "OrderDate", "OrderPriority", "Clerk", "ShipPriority", "Comment", "Extra"])
+        partsupp = pd.read_csv(os.path.join(data_directory_5, "partsupp.tbl"), sep="|", names=["PartKey", "SuppKey", "AvailQty", "SupplyCost", "Comment", "Col9"])
+        part = pd.read_csv(os.path.join(data_directory_5, "part.tbl"), sep="|", names=["PartKey", "Name", "MFGR", "Brand", "Type", "Size", "Container", "RetailPrice", "Comment", "Col9"])
+        supplier = pd.read_csv(os.path.join(data_directory_5, "supplier.tbl"), sep="|", names=["SuppKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "Comment", "Col9"])
 
         simplify_col(lineitem, "OrderKey")
         simplify_col(lineitem, "PartKey")
@@ -160,14 +162,13 @@ def main():
         np_nn_time = np_nn_time / n
 
 
-
-        customer = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/customer.tbl", sep="|", names=["CustomerKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "MktSegment", "Comment", "Col9"])
-        lineitem = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/lineitem.tbl", sep="|", names=["OrderKey", "PartKey", "SuppKey", "LineNumber", "Quantity", "ExtendedPrice", "Discount", "Tax", "ReturnFlag", "LineStatus", "ShipDate", "CommitDate", "ReceiptDate", "ShipInstruct", "ShipMode", "Comment", "Col9"])
+        customer = pd.read_csv(os.path.join(data_directory_0_25, "customer.tbl"), sep="|", names=["CustomerKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "MktSegment", "Comment", "Col9"])
+        lineitem = pd.read_csv(os.path.join(data_directory_0_25, "lineitem.tbl"), sep="|", names=["OrderKey", "PartKey", "SuppKey", "LineNumber", "Quantity", "ExtendedPrice", "Discount", "Tax", "ReturnFlag", "LineStatus", "ShipDate", "CommitDate", "ReceiptDate", "ShipInstruct", "ShipMode", "Comment", "Col9"])
         lineitem["LineItemKey"] = range(1, len(lineitem)+1) 
-        orders = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/orders.tbl", sep="|", names=["OrderKey", "CustomerKey", "OrderStatus", "TotalPrice", "OrderDate", "OrderPriority", "Clerk", "ShipPriority", "Comment", "Extra"])
-        partsupp = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/partsupp.tbl", sep="|", names=["PartKey", "SuppKey", "AvailQty", "SupplyCost", "Comment", "Col9"])
-        part = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/part.tbl", sep="|", names=["PartKey", "Name", "MFGR", "Brand", "Type", "Size", "Container", "RetailPrice", "Comment", "Col9"])
-        supplier = pd.read_csv("/local1/kdeeds/Galley.jl/Experiments/Data/TPCH/supplier.tbl", sep="|", names=["SuppKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "Comment", "Col9"])
+        orders = pd.read_csv(os.path.join(data_directory_0_25, "orders.tbl"), sep="|", names=["OrderKey", "CustomerKey", "OrderStatus", "TotalPrice", "OrderDate", "OrderPriority", "Clerk", "ShipPriority", "Comment", "Extra"])
+        partsupp = pd.read_csv(os.path.join(data_directory_0_25, "partsupp.tbl"), sep="|", names=["PartKey", "SuppKey", "AvailQty", "SupplyCost", "Comment", "Col9"])
+        part = pd.read_csv(os.path.join(data_directory_0_25, "part.tbl"), sep="|", names=["PartKey", "Name", "MFGR", "Brand", "Type", "Size", "Container", "RetailPrice", "Comment", "Col9"])
+        supplier = pd.read_csv(os.path.join(data_directory_0_25, "supplier.tbl"), sep="|", names=["SuppKey", "Name", "Address", "NationKey", "Phone", "AcctBal", "Comment", "Col9"])
 
         simplify_col(lineitem, "OrderKey")
         simplify_col(lineitem, "PartKey")
@@ -242,7 +243,7 @@ def main():
                 [method_name, "Logistic Regression (SJ)", np_log_time2, 0],
                 [method_name, "Covariance (SJ)", np_cov_time2, 0],
                 [method_name, "Neural Network (SJ)", np_nn_time2, 0]]
-        filename = "/local1/kdeeds/Galley.jl/Experiments/Results/tpch_inference_polars_parallel.csv" if parallel else "/local1/kdeeds/Galley.jl/Experiments/Results/tpch_inference_polars_serial.csv"
+        filename = os.path.join(results_directory, "tpch_inference_polars_parallel.csv" if parallel else "tpch_inference_polars_serial.csv")
         with open(filename, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerows(data)
