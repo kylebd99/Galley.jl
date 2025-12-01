@@ -5,6 +5,8 @@ mv *.tbl ../Experiments/Data/TPCH
 mv *.tbl ../Experiments/Data/TPCH_5 
 cd ..
 
+mkdir -p Experiments/Results
+
 poetry run python "Experiments/Scripts/tpch_inference_polars.py" --parallel true
 
 poetry run python "Experiments/Scripts/tpch_inference_polars.py" --parallel false
