@@ -17,9 +17,24 @@ C == compute(lazy(A) * B, ctx=galley_scheduler()) # True
 ```
 ## Reproducibility
 
-To reproduce the experiments from this paper, you will need to install julia and poetry (for managing the python dependencies). To install python dependencies run:
+To reproduce the experiments from this paper, you will need to install julia and poetry (for managing the python dependencies). To install julia on a mac/linux system, run the following command:
+```
+curl -fsSL https://install.julialang.org | sh
+```
+To install poetry, run:
+```
+curl -sSL https://install.python-poetry.org | python3 -
+```
+With poetry, you then install python dependencies by running:
 ```
 poetry install
+```
+Lastly, to build the TPC-H data generator, you will need the `cmake` and `make` utilities. With those available, you can run:
+```
+cd tpch-dbgen
+cmake .
+make . 
+cd ..
 ```
 To run the join inference experiments, run:
 ```
@@ -40,5 +55,5 @@ bash run_bfs_experiments.sh
 
 These experiments all produce their graph in Experiments/Figures.
 
-Note: Some of these experiments require significant memory to run. The machine that it was originally evaluated on had 256 GB of memory. This is necessary for evaluating the pandas/numpy and polars/pytorch comparisons in the join inference experiments.
+Note: Some of these experiments require significant memory to run. The machine that it was originally evaluated on had 256 GB of memory. This is necessary for evaluating the pandas/numpy and polars/pytorch comparisons in the join inference experiments. To run the experiments on machines with less memory, reduce the scale factor on lines 2 and 4 of `run_inference_experiments.sh` to generate smaller TPCH datasets. 
 
