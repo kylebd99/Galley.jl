@@ -1,8 +1,10 @@
 
 import argparse 
 parser = argparse.ArgumentParser(description="Matrix chain benchmarks (PyTorch)")
-parser.add_argument("--parallel", "-p", type=bool, default=True, help="Whether to run in parallel")
-parallel = parser.parse_args().parallel
+parser.add_argument("--parallel", "-p", type=str, default=False, help="Whether to run in parallel")
+parallel = parser.parse_args().parallel.lower() == "true"
+
+print("Running with parallel =", parallel)
 
 import os 
 if not parallel:
@@ -244,6 +246,8 @@ def main():
                 [method_name, "Covariance (SJ)", np_cov_time2, 0],
                 [method_name, "Neural Network (SJ)", np_nn_time2, 0]]
         filename = os.path.join(results_directory, "tpch_inference_polars_parallel.csv" if parallel else "tpch_inference_polars_serial.csv")
+        print("Writing results to ", filename)
+
         with open(filename, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerows(data)
