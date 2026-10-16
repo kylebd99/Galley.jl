@@ -7,3 +7,8 @@ workflows/CI.yml
 .vscode/*
 Manifest.toml
 .DS_Store
+*.jl.*.cov
+*.jl.cov
+*.jl.mem
+/docs/build/
+build-compliance/
