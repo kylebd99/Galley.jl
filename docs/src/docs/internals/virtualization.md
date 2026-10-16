@@ -1,0 +1,358 @@
+```@meta
+CurrentModule = Galley
+```
+
+### Program Instances
+
+Finch relies heavily on Julia's
+[metaprogramming capabilities](https://docs.julialang.org/en/v1/manual/metaprogramming/) (
+[macros](https://docs.julialang.org/en/v1/manual/metaprogramming/#Macros) and
+[generated functions](https://docs.julialang.org/en/v1/manual/metaprogramming/#Generated-functions)
+in particular) to produce code. To review briefly, a macro allows us to inspect
+the syntax of it's arguments and generate replacement syntax. A generated
+function allows us to inspect the type of the function arguments and produce
+code for a function body.
+
+In normal Finch usage, we might call Finch as follows:
+
+```jldoctest example1; setup = :(using Galley)
+julia> C = Tensor(SparseList(Element(0)));
+
+julia> A = Tensor(SparseList(Element(0)), [0, 2, 0, 0, 3]);
+
+julia> B = Tensor(Dense(Element(0)), [11, 12, 13, 14, 15]);
+
+julia> @finch begin
+           C .= 0
+           for i in _
+               C[i] = A[i] * B[i]
+           end
+       end
+(C = Tensor(SparseList{Int64}(Element{0, Int64, Int64}([24, 45]), 5, [1, 3], [2, 5])),)
+
+julia> C
+5 Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}:
+  0
+ 24
+  0
+  0
+ 45
+
+julia> tensor_tree(C)
+5-Tensor
+└─ SparseList (0) [1:5]
+   ├─ [2]: 24
+   └─ [5]: 45
+```
+
+The
+[`@macroexpand`](https://docs.julialang.org/en/v1/base/base/#Base.macroexpand)
+macro allows us to see the result of applying a macro. Let's examine what
+happens when we use the `@finch` macro (we've stripped line numbers from the
+result to clean it up):
+
+```jldoctest example1; filter=r"Galley.(FinchNotation.)?"
+julia> Galley.regensym(Galley.striplines(@macroexpand @finch begin
+           C .= 0
+           for i in _
+               C[i] = A[i] * B[i]
+           end
+       end))
+quote
+    _res_1 = (Galley.execute)(begin
+                (Galley.FinchNotation.block_instance)((Galley.FinchNotation.block_instance)((Galley.FinchNotation.declare_instance)((Galley.FinchNotation.tag_instance)(variable_instance(:C), (Galley.FinchNotation.finch_leaf_instance)(C)), literal_instance(0), (Galley.FinchNotation.literal_instance)(Galley.auto)), begin
+                            let i = index_instance(i)
+                                (Galley.FinchNotation.loop_instance)(i, Galley.FinchNotation.Auto(), (Galley.FinchNotation.assign_instance)((Galley.FinchNotation.access_instance)((Galley.FinchNotation.tag_instance)(variable_instance(:C), (Galley.FinchNotation.finch_leaf_instance)(C)), (Galley.FinchNotation.updater_instance)((Galley.FinchNotation.literal_instance)((initwrite)((fill_value)(C)))), (Galley.FinchNotation.tag_instance)(variable_instance(:i), (Galley.FinchNotation.finch_leaf_instance)(i))), (Galley.FinchNotation.literal_instance)((initwrite)((fill_value)(C))), (Galley.FinchNotation.call_instance)((Galley.FinchNotation.tag_instance)(variable_instance(:*), (Galley.FinchNotation.finch_leaf_instance)(*)), (Galley.FinchNotation.access_instance)((Galley.FinchNotation.tag_instance)(variable_instance(:A), (Galley.FinchNotation.finch_leaf_instance)(A)), (Galley.FinchNotation.reader_instance)(), (Galley.FinchNotation.tag_instance)(variable_instance(:i), (Galley.FinchNotation.finch_leaf_instance)(i))), (Galley.FinchNotation.access_instance)((Galley.FinchNotation.tag_instance)(variable_instance(:B), (Galley.FinchNotation.finch_leaf_instance)(B)), (Galley.FinchNotation.reader_instance)(), (Galley.FinchNotation.tag_instance)(variable_instance(:i), (Galley.FinchNotation.finch_leaf_instance)(i))))))
+                            end
+                        end), (Galley.FinchNotation.yieldbind_instance)(variable_instance(:C)))
+            end; )
+    begin
+        C = _res_1[:C]
+    end
+    begin
+        _res_1
+    end
+end
+```
+
+In the above output, `@finch` creates an AST of program instances, then calls
+`Galley.execute` on it. A program instance is a struct that contains the program
+to be executed along with its arguments. Although we can use the above
+constructors (e.g. `loop_instance`) to make our own program instance, it is most
+convenient to use the unexported macro `Galley.finch_program_instance`:
+
+```jldoctest example1
+julia> using Galley: @finch_program_instance
+
+julia> prgm = Galley.@finch_program_instance begin
+           C .= 0
+           for i in _
+               C[i] = A[i] * B[i]
+           end
+           return C
+       end
+Finch program instance: begin
+  tag(C, Tensor(SparseList(Element(0)))) .= 0
+  for i = Auto()
+    tag(C, Tensor(SparseList(Element(0))))[tag(i, i)] <<Galley.FinchNotation.InitWriter{0}()>>= tag(*, *)(tag(A, Tensor(SparseList(Element(0))))[tag(i, i)], tag(B, Tensor(Dense(Element(0))))[tag(i, i)])
+  end
+  return (tag(C, Tensor(SparseList(Element(0)))))
+end
+```
+
+As we can see, our program instance contains not only the AST to be executed,
+but also the data to execute the program with. The type of the program instance
+contains only the program portion; there may be many program instances with
+different inputs, but the same program type. We can run our program using
+`Galley.execute`, which returns a `NamedTuple` of outputs.
+
+```jldoctest example1; filter=r"Galley.FinchNotation."
+julia> typeof(prgm)
+Galley.FinchNotation.BlockInstance{Tuple{Galley.FinchNotation.DeclareInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:C}, Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}}, Galley.FinchNotation.LiteralInstance{0}, Galley.FinchNotation.LiteralInstance{Galley.FinchNotation.Auto()}}, Galley.FinchNotation.LoopInstance{Galley.FinchNotation.IndexInstance{:i}, Galley.FinchNotation.Auto, Galley.FinchNotation.AssignInstance{Galley.FinchNotation.AccessInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:C}, Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}}, Galley.FinchNotation.UpdaterInstance{Galley.FinchNotation.LiteralInstance{Galley.FinchNotation.InitWriter{0}()}}, Tuple{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:i}, Galley.FinchNotation.IndexInstance{:i}}}}, Galley.FinchNotation.LiteralInstance{Galley.FinchNotation.InitWriter{0}()}, Galley.FinchNotation.CallInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:*}, Galley.FinchNotation.LiteralInstance{*}}, Tuple{Galley.FinchNotation.AccessInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:A}, Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}}, Galley.FinchNotation.ReaderInstance, Tuple{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:i}, Galley.FinchNotation.IndexInstance{:i}}}}, Galley.FinchNotation.AccessInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:B}, Tensor{DenseLevel{Int64, ElementLevel{0, Int64, Int64, Vector{Int64}}}}}, Galley.FinchNotation.ReaderInstance, Tuple{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:i}, Galley.FinchNotation.IndexInstance{:i}}}}}}}}, Galley.FinchNotation.YieldBindInstance{Tuple{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:C}, Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}}}}}}
+
+julia> C = Galley.execute(prgm).C
+5 Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}:
+  0
+ 24
+  0
+  0
+ 45
+```
+
+This functionality is sufficient for building finch kernels programatically. For
+example, if we wish to define a function `pointwise_sum()` that takes the
+pointwise sum of a variable number of vector inputs, we might implement it as
+follows:
+
+```jldoctest example1
+julia> function pointwise_sum(As...)
+           B = Tensor(Dense(Element(0)))
+           isempty(As) && return B
+           i = Galley.FinchNotation.index_instance(:i)
+           A_vars = [
+               Galley.FinchNotation.tag_instance(
+                   Galley.FinchNotation.variable_instance(Symbol(:A, n)), As[n]
+               ) for n in 1:length(As)
+           ]
+           #create a list of variable instances with different names to hold the input tensors
+           ex = @finch_program_instance 0
+           for A_var in A_vars
+               ex = @finch_program_instance $A_var[i] + $ex
+           end
+           prgm = @finch_program_instance begin
+               B .= 0
+               for i in _
+                   B[i] = $ex
+               end
+               return B
+           end
+           return Galley.execute(prgm).B
+       end
+pointwise_sum (generic function with 1 method)
+
+julia> pointwise_sum([1, 2], [3, 4])
+2 Tensor{DenseLevel{Int64, ElementLevel{0, Int64, Int64, Vector{Int64}}}}:
+ 4
+ 6
+```
+
+## Virtualization
+
+Finch generates different code depending on the types of the arguments to the
+program. For example, in the following program, Finch generates different code
+depending on the types of `A` and `B`. In order to execute a program, Finch
+builds a typed AST (Abstract Syntax Tree), then calls `Galley.execute` on it. The
+AST object is just an instance of a program to execute, and contains the program
+to execute along with the data to execute it.  The type of the program instance
+contains only the program portion; there may be many program instances with
+different inputs, but the same program type. During compilation, Finch uses the
+type of the program to construct a more ergonomic representation, which is then
+used to generate code. This process is called "virtualization".  All of the
+Finch AST nodes have both instance and virtual representations. For example, the
+literal `42` is represented as `Galley.FinchNotation.LiteralInstance(42)` and
+then virtualized to `literal(42)`.  The virtualization process is implemented by
+the `virtualize` function.
+
+```jldoctest example2; setup = :(using Galley)
+julia> A = Tensor(SparseList(Element(0)), [0, 2, 0, 0, 3]);
+
+julia> B = Tensor(Dense(Element(0)), [11, 12, 13, 14, 15]);
+
+julia> s = Scalar(0);
+
+julia> typeof(A)
+Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}
+
+julia> typeof(B)
+Tensor{DenseLevel{Int64, ElementLevel{0, Int64, Int64, Vector{Int64}}}}
+
+julia> inst = Galley.@finch_program_instance begin
+           for i in _
+               s[] += A[i]
+           end
+       end
+Finch program instance: for i = Auto()
+  tag(s, Scalar{0, Int64})[] <<tag(+, +)>>= tag(A, Tensor(SparseList(Element(0))))[tag(i, i)]
+end
+
+julia> typeof(inst)
+Galley.FinchNotation.LoopInstance{Galley.FinchNotation.IndexInstance{:i}, Galley.FinchNotation.Auto, Galley.FinchNotation.AssignInstance{Galley.FinchNotation.AccessInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:s}, Scalar{0, Int64}}, Galley.FinchNotation.UpdaterInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:+}, Galley.FinchNotation.LiteralInstance{+}}}, Tuple{}}, Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:+}, Galley.FinchNotation.LiteralInstance{+}}, Galley.FinchNotation.AccessInstance{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:A}, Tensor{SparseListLevel{Int64, Vector{Int64}, Vector{Int64}, ElementLevel{0, Int64, Int64, Vector{Int64}}}}}, Galley.FinchNotation.ReaderInstance, Tuple{Galley.FinchNotation.TagInstance{Galley.FinchNotation.VariableInstance{:i}, Galley.FinchNotation.IndexInstance{:i}}}}}}
+
+julia> Galley.virtualize(Galley.JuliaContext(), :inst, typeof(inst))
+Finch program: for i = virtual(Galley.FinchNotation.Auto)
+  tag(s, virtual(Galley.VirtualScalar))[] <<tag(+, +)>>= tag(A, virtual(Galley.VirtualFiber{Galley.VirtualSparseListLevel}))[tag(i, i)]
+end
+
+julia> @finch_code begin
+           for i in _
+               s[] += A[i]
+           end
+       end
+quote
+    s_data = (ex.bodies[1]).body.lhs.tns.bind
+    s_val = s_data.val
+    A_lvl = (ex.bodies[1]).body.rhs.tns.bind.lvl
+    A_lvl_ptr = A_lvl.ptr
+    A_lvl_idx = A_lvl.idx
+    A_lvl_stop = A_lvl.shape
+    A_lvl_2 = A_lvl.lvl
+    A_lvl_2_val = A_lvl_2.val
+    A_lvl_q = A_lvl_ptr[1]
+    A_lvl_q_stop = A_lvl_ptr[1 + 1]
+    if A_lvl_q < A_lvl_q_stop
+        A_lvl_i1 = A_lvl_idx[A_lvl_q_stop - 1]
+    else
+        A_lvl_i1 = 0
+    end
+    phase_stop = min(A_lvl_i1, A_lvl_stop)
+    if phase_stop >= 1
+        if A_lvl_idx[A_lvl_q] < 1
+            A_lvl_q = Galley.scansearch(A_lvl_idx, 1, A_lvl_q, A_lvl_q_stop - 1)
+        end
+        while true
+            A_lvl_i = A_lvl_idx[A_lvl_q]
+            if A_lvl_i < phase_stop
+                A_lvl_2_val_2 = A_lvl_2_val[A_lvl_q]
+                s_val = A_lvl_2_val_2 + s_val
+                A_lvl_q += 1
+            else
+                phase_stop_3 = min(phase_stop, A_lvl_i)
+                if A_lvl_i == phase_stop_3
+                    A_lvl_2_val_2 = A_lvl_2_val[A_lvl_q]
+                    s_val += A_lvl_2_val_2
+                    A_lvl_q += 1
+                end
+                break
+            end
+        end
+    end
+    result = ()
+    s_data.val = s_val
+    result
+end
+
+julia> @finch_code begin
+           for i in _
+               s[] += B[i]
+           end
+       end
+quote
+    s_data = (ex.bodies[1]).body.lhs.tns.bind
+    s_val = s_data.val
+    B_lvl = (ex.bodies[1]).body.rhs.tns.bind.lvl
+    B_lvl_stop = B_lvl.shape
+    B_lvl_2 = B_lvl.lvl
+    B_lvl_2_val = B_lvl_2.val
+    for i_3 = 1:B_lvl_stop
+        B_lvl_q = (1 - 1) * B_lvl_stop + i_3
+        B_lvl_2_val_2 = B_lvl_2_val[B_lvl_q]
+        s_val = B_lvl_2_val_2 + s_val
+    end
+    result = ()
+    s_data.val = s_val
+    result
+end
+```
+
+### The "virtual" IR Node
+
+Users can also create their own virtual nodes to represent their custom types.
+While most calls to virtualize result in a Finch IR Node, some objects, such as
+tensors and dimensions, are virtualized to a `virtual` object, which holds the
+custom virtual type.  These types may contain constants and other virtuals, as
+well as reference variables in the scope of the executing context. Any aspect of
+virtuals visible to Finch should be considered immutable, but virtuals may
+reference mutable variables in the scope of the executing context.
+
+```@docs
+virtualize
+FinchNotation.virtual
+```
+
+### Virtual Methods
+
+Many methods have analogues we can call on the virtual version of the object.
+For example, we can call `size` an an array, and `virtual_size` on a virtual
+array. The virtual methods are used to generate code, so if they are pure they
+may return an expression which computes the results, and if they have side
+effects they may accept a context argument into which they can emit their
+side-effecting code.
+
+In addition to the special compiler methods which are prefixed `virtual_`, there
+is also a function `virtual_call`, which is used to evaluate function calls on
+Finch IR when it would result in a virtual object. The behavior should mirror
+the concrete behavior of the corresponding function.
+
+```@docs
+virtual_call
+```
+
+## Working with Finch IR
+
+Calling print on a finch program or program instance will print the
+structure of the program as one would call constructors to build it. For
+example,
+
+```jldoctest example2; setup = :(using Galley)
+julia> prgm_inst = Galley.@finch_program_instance for i in _
+           s[] += A[i]
+       end;
+
+julia> println(prgm_inst)
+loop_instance(index_instance(i), Galley.FinchNotation.Auto(), assign_instance(access_instance(tag_instance(variable_instance(:s), Scalar{0, Int64}(0)), updater_instance(tag_instance(variable_instance(:+), literal_instance(+)))), tag_instance(variable_instance(:+), literal_instance(+)), access_instance(tag_instance(variable_instance(:A), Tensor(SparseList{Int64}(Element{0, Int64, Int64}([2, 3]), 5, [1, 3], [2, 5]))), reader_instance(), tag_instance(variable_instance(:i), index_instance(i)))))
+
+julia> prgm_inst
+Finch program instance: for i = Auto()
+  tag(s, Scalar{0, Int64})[] <<tag(+, +)>>= tag(A, Tensor(SparseList(Element(0))))[tag(i, i)]
+end
+
+julia> prgm = Galley.@finch_program for i in _
+           s[] += A[i]
+       end;
+
+julia> println(prgm)
+loop(index(i), virtual(Galley.FinchNotation.Auto()), assign(access(literal(Scalar{0, Int64}(0)), updater(literal(+))), literal(+), access(literal(Tensor(SparseList{Int64}(Element{0, Int64, Int64}([2, 3]), 5, [1, 3], [2, 5]))), reader(), index(i))))
+
+julia> prgm
+Finch program: for i = virtual(Galley.FinchNotation.Auto)
+  Scalar{0, Int64}(0)[] <<+>>= Tensor(SparseList{Int64}(Element{0, Int64, Int64}([2, 3]), 5, [1, 3], [2, 5]))[i]
+end
+```
+
+Both the virtual and instance representations of Finch IR define
+[SyntaxInterface.jl](https://github.com/willow-ahrens/SyntaxInterface.jl) and
+[AbstractTrees.jl](https://github.com/JuliaCollections/AbstractTrees.jl)
+representations, so you can use the standard `operation`, `arguments`, `istree`, and `children` functions to inspect the structure of the program, as well as the rewriters defined by [RewriteTools.jl](https://github.com/willow-ahrens/RewriteTools.jl)
+
+```jldoctest example2; setup = :(using Galley, AbstractTrees, SyntaxInterface, RewriteTools)
+julia> using Galley.FinchNotation;
+
+julia> PostOrderDFS(prgm)
+PostOrderDFS{FinchNode}(loop(index(i), virtual(Auto()), assign(access(literal(Scalar{0, Int64}(0)), updater(literal(+))), literal(+), access(literal(Tensor(SparseList{Int64}(Element{0, Int64, Int64}([2, 3]), 5, [1, 3], [2, 5]))), reader(), index(i)))))
+
+julia> (@capture prgm loop(~idx, ~ext, ~val))
+true
+
+julia> idx
+Finch program: i
+```

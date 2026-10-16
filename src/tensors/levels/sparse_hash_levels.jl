@@ -1,0 +1,1129 @@
+"""
+    SparseHashLevel{[Ti=Int]}(lvl, [dim], [subtables=1], [pos_multiplier])
+
+A subfiber of a sparse level does not need to represent slices `A[:, ..., :, i]`
+which are entirely [`fill_value`](@ref). Instead, only potentially non-fill
+slices are stored as subfibers in `lvl`. A hash table records which slices are
+stored. Optionally, `dim` is the size of the last dimension, and `subtables`, a
+power of two, splits the table into buckets that parallel merges fill
+independently.
+
+`pos_multiplier` is an odd `UInt` stored with the table. It defaults to a shared
+random value. Preserve it alongside the buffers when serializing or reconstructing
+a level; shards and their merge destination must use the same multiplier.
+
+`Ti` is the type of the last fiber index. Up to 127 overlapping logical writers
+can share a tentative entry within one task.
+
+Implementation invariants:
+
+* An entry is keyed by `(p, i)`, a parent position and an index, and owns a
+  stable child position `q`. Its record is `key[q] == (p, i, state)`: `0x00`
+  means free, `0x01:0x7f` count pending writers, and `0x80` means retained.
+  Exceeding 127 pending writers per entry throws an error.
+* `tbl_ctrl` and `tbl` form a linear-probing table, split into `subtables`
+  contiguous buckets. Every occupied slot, tentative or retained, has the high
+  bit of `tbl_ctrl[h]` set, seven hash fingerprint bits below it, and `tbl[h] == q`.
+  `0x00` marks an empty slot, which ends a probe. Probes wrap within their bucket.
+* Keys hash as `x = a * p + hash(i)`, where `a = pos_multiplier` is an odd
+  multiplier stored in the level. The high `log2(subtables)` bits of `x` pick the
+  bucket, as in multiply-shift hashing, so parents spread across buckets even when they
+  share their low bits. Shifting parents by `delta` adds `a * delta` to `x`,
+  which moves a bucket up by the high bits of `a * delta`, or by one more where
+  the low bits carry. `x` is linear in `p`, and linear probing clusters on linear
+  hashes of structured parents, so the rest comes from `y = hash(x)`: its low
+  seven bits are the fingerprint, and the bits above them pick the starting slot.
+* `tbl_count[b]` counts the entries in bucket `b`, plus keys still pending during
+  assembly, which grows the table before any bucket is more than half full.
+  Frozen, `tbl_count` holds checkpoints every `subtables` ranks of `perm`:
+  block `j`, `tbl_count[(j - 1) * subtables .+ b]`, counts the entries in each
+  bucket `b` of rank at least `(j - 1) * subtables + 1`. Block 1 is the bucket
+  totals, and the last block is past the last rank. Counts from any rank are a
+  checkpoint plus fewer than `subtables` entries. A merge's output holds only
+  the totals.
+* Frozen, `length(key)` is the extent of child positions, `ptr[p]:(ptr[p + 1] - 1)`
+  indexes `perm`, and `perm[r]` is a child position. Each parent's range is
+  sorted by index.
+* While assembling, `length(key)` is the child capacity. Only positions through
+  the allocated child extent are initialized. A new key gets its child position
+  and is inserted tentatively before its child is written. The first dirty
+  writer marks the child record retained; later writers cannot discard it.
+  Otherwise, the last writer backward-shift deletes the table entry, marks the
+  record free, and pushes its position onto a local `free_head` chain, storing
+  the next link in the free record's parent field. Counts stay at stable child
+  positions across growth and deletion; only final deletion needs a slot lookup.
+* Rehash and freeze scan the child records directly, skipping free positions.
+  Coalesce workers initialize holes in their own child ranges. Freeze trims free
+  tails. Thaw rebuilds the free chain when the frozen level has interior holes.
+* Declaration retains table capacity. It clears control bytes through the frozen
+  permutation when occupancy is very low, or fills the control array otherwise.
+
+```jldoctest
+julia> tensor_tree(Tensor(Dense(SparseHash(Element(0.0))), [10 0 20; 30 0 0; 0 0 40]))
+3×3-Tensor
+└─ Dense [:,1:3]
+   ├─ [:, 1]: SparseHash (0.0) [1:3]
+   │  ├─ [1]: 10.0
+   │  └─ [2]: 30.0
+   ├─ [:, 2]: SparseHash (0.0) [1:3]
+   └─ [:, 3]: SparseHash (0.0) [1:3]
+      ├─ [1]: 20.0
+      └─ [3]: 40.0
+
+julia> tensor_tree(Tensor(SparseHash(SparseHash(Element(0.0))), [10 0 20; 30 0 0; 0 0 40]))
+3×3-Tensor
+└─ SparseHash (0.0) [:,1:3]
+   ├─ [:, 1]: SparseHash (0.0) [1:3]
+   │  ├─ [1]: 10.0
+   │  └─ [2]: 30.0
+   └─ [:, 3]: SparseHash (0.0) [1:3]
+      ├─ [1]: 20.0
+      └─ [3]: 40.0
+
+```
+"""
+struct SparseHashLevel{Ti,Ptr,TblCtrl,Tbl,Key,Perm,TblCount,Lvl} <: AbstractLevel
+    lvl::Lvl
+    shape::Ti
+    subtables::Int
+    pos_multiplier::UInt
+    ptr::Ptr
+    tbl_ctrl::TblCtrl
+    tbl::Tbl
+    key::Key
+    perm::Perm
+    tbl_count::TblCount
+end
+const SparseHash = SparseHashLevel
+
+# The buffers a hash level carries, in constructor order after `pos_multiplier`.
+const SPARSE_HASH_BUFFERS = (:ptr, :tbl_ctrl, :tbl, :key, :perm, :tbl_count)
+
+SparseHashLevel(lvl, args...) = SparseHashLevel{Int}(lvl, args...)
+function SparseHashLevel(lvl, shape::Ti, args...) where {Ti}
+    SparseHashLevel{Ti}(lvl, shape, args...)
+end
+function SparseHashLevel{Ti}(
+    lvl, shape=zero(Ti), subtables=1, pos_multiplier=SPARSE_HASH_POS_MULTIPLIER
+) where {Ti}
+    sparse_hash_check_subtables(subtables)
+    Tp = postype(lvl)
+    SparseHashLevel{Ti}(
+        lvl, shape, subtables, pos_multiplier, Tp[1], UInt8[], Tp[], Tuple{Tp,Ti,UInt8}[],
+        Tp[],
+        zeros(Int, subtables),
+    )
+end
+function SparseHashLevel{Ti}(
+    lvl::Lvl, shape, subtables, pos_multiplier, ptr::Ptr, tbl_ctrl::TblCtrl, tbl::Tbl,
+    key::Key,
+    perm::Perm, tbl_count::TblCount,
+) where {Ti,Ptr,TblCtrl,Tbl,Key,Perm,TblCount,Lvl}
+    sparse_hash_check_subtables(subtables)
+    pos_multiplier isa Integer && isodd(pos_multiplier) ||
+        throw(ArgumentError("SparseHash position multiplier must be an odd integer"))
+    SparseHashLevel{Ti,Ptr,TblCtrl,Tbl,Key,Perm,TblCount,Lvl}(
+        lvl, Ti(shape), Int(subtables), UInt(pos_multiplier), ptr, tbl_ctrl, tbl, key, perm,
+        tbl_count,
+    )
+end
+
+# `lvl` with a new child and shape, keeping its table.
+function sparse_hash_with(lvl::SparseHashLevel{Ti}, child, shape=lvl.shape) where {Ti}
+    SparseHashLevel{Ti}(
+        child, shape, lvl.subtables, lvl.pos_multiplier,
+        (getfield(lvl, f) for f in SPARSE_HASH_BUFFERS)...,
+    )
+end
+
+const SPARSE_HASH_CTRL_EMPTY = 0x00
+const SPARSE_HASH_CTRL_FULL = 0x80
+const SPARSE_HASH_KEY_FREE = 0x00
+const SPARSE_HASH_KEY_RETAINED = 0x80
+# Default for new tables only. Existing tables always use their stored multiplier.
+const SPARSE_HASH_POS_MULTIPLIER = rand(UInt) | one(UInt)
+
+function sparse_hash_check_subtables(subtables)
+    if !(subtables isa Integer) || subtables < 1 || !ispow2(subtables)
+        throw(ArgumentError("SparseHash subtables must be a positive power of two"))
+    end
+end
+
+# Slots for a bucket of `n` entries, keeping it at most half full.
+sparse_hash_table_capacity(n) = nextpow(2, max(4, 2n))
+
+@inline sparse_hash_hash(p, i, pos_multiplier) = pos_multiplier * (p % UInt) + hash(i)
+# The high bits pick the bucket. One bucket shifts by the full width, giving 0.
+@inline sparse_hash_hash_subtable(x::UInt, subtables) =
+    Int(x >>> (8 * sizeof(UInt) - trailing_zeros(subtables))) + 1
+@inline sparse_hash_hash_ctrl(x::UInt) = SPARSE_HASH_CTRL_FULL | (hash(x) % UInt8 & 0x7f)
+# The bucket's first slot, the probe's starting offset within the bucket, and
+# the offset mask for a table of `n` slots. The offset skips the fingerprint bits.
+@inline function sparse_hash_hash_slot_parts(x::UInt, n, subtables)
+    mask = (n >>> trailing_zeros(subtables)) - 1
+    base = (sparse_hash_hash_subtable(x, subtables) - 1) * (mask + 1) + 1
+    return base, Int((hash(x) >>> 7) & UInt(mask)), mask
+end
+
+# The slot holding key `(p, i)`, which hashes to `x`, or else the empty slot that
+# ends its probe.
+@inline function sparse_hash_find(tbl_ctrl, tbl, key, p, i, x, subtables)
+    ctrl = sparse_hash_hash_ctrl(x)
+    base, off, mask = sparse_hash_hash_slot_parts(x, length(tbl_ctrl), subtables)
+    @inbounds while true
+        c = tbl_ctrl[base + off]
+        c == SPARSE_HASH_CTRL_EMPTY && return base + off
+        if c == ctrl
+            k = key[tbl[base + off]]
+            k[1] == p && k[2] == i && return base + off
+        end
+        off = (off + 1) & mask
+    end
+end
+
+# The first empty slot on `x`'s probe, where a key known to be absent goes.
+@inline function sparse_hash_vacancy(tbl_ctrl, x, subtables)
+    base, off, mask = sparse_hash_hash_slot_parts(x, length(tbl_ctrl), subtables)
+    @inbounds while tbl_ctrl[base + off] != SPARSE_HASH_CTRL_EMPTY
+        off = (off + 1) & mask
+    end
+    return base + off
+end
+
+# The child position of key `(p, i)`, or zero if it is absent.
+@inline function sparse_hash_lookup(tbl_ctrl, tbl, key, p, i, subtables, pos_multiplier)
+    isempty(tbl_ctrl) && return zero(eltype(tbl))
+    h = sparse_hash_find(
+        tbl_ctrl, tbl, key, p, i, sparse_hash_hash(p, i, pos_multiplier), subtables
+    )
+    @inbounds return tbl_ctrl[h] == SPARSE_HASH_CTRL_EMPTY ? zero(eltype(tbl)) : tbl[h]
+end
+
+# Clear a frozen table without releasing its capacity. Visiting an entry costs a
+# hash and a random probe, while filling the control array costs well under a
+# nanosecond per slot, so only visit entries at very low occupancy.
+function sparse_hash_clear!(tbl_ctrl, tbl, key, perm, subtables, pos_multiplier)
+    if length(perm) <= length(tbl_ctrl) ÷ 4096
+        @inbounds for q in perm
+            p, i, _ = key[q]
+            base, off, mask = sparse_hash_hash_slot_parts(
+                sparse_hash_hash(p, i, pos_multiplier), length(tbl_ctrl), subtables
+            )
+            # Slots do not move during clearing. Continue past emptied slots
+            # in the probe chain until this child's occupied slot is found.
+            while tbl_ctrl[base + off] == SPARSE_HASH_CTRL_EMPTY || tbl[base + off] != q
+                off = (off + 1) & mask
+            end
+            tbl_ctrl[base + off] = SPARSE_HASH_CTRL_EMPTY
+        end
+    else
+        fill!(tbl_ctrl, SPARSE_HASH_CTRL_EMPTY)
+    end
+    return nothing
+end
+
+# Child records hold both liveness and writer state, so every rebuild scans
+# them sequentially. The unused capacity after `qos_stop` is never read.
+function sparse_hash_resize!(
+    tbl_ctrl, tbl, key, cap, subtables, pos_multiplier, qos_stop=length(key)
+)
+    empty!(tbl_ctrl)
+    resize!(tbl_ctrl, cap)
+    fill!(tbl_ctrl, SPARSE_HASH_CTRL_EMPTY)
+    empty!(tbl)
+    resize!(tbl, cap)
+    @inbounds for q in 1:qos_stop
+        p, i, state = key[q]
+        state == SPARSE_HASH_KEY_FREE && continue
+        x = sparse_hash_hash(p, i, pos_multiplier)
+        h = sparse_hash_vacancy(tbl_ctrl, x, subtables)
+        tbl_ctrl[h] = sparse_hash_hash_ctrl(x)
+        tbl[h] = q
+    end
+end
+
+# Order the entries for reading: `perm[ptr[p]:(ptr[p + 1] - 1)]` lists parent `p`'s
+# child positions by index. Returns the live child extent and trims `key`
+# beyond it, so an empty hash also has an empty child.
+function sparse_hash_freeze!(ptr, perm, key, pos_stop, qos_stop=length(key))
+    n = count(q -> key[q][3] != SPARSE_HASH_KEY_FREE, 1:qos_stop)
+    qs = Vector{eltype(perm)}(undef, n)
+    ps = Vector{fieldtype(eltype(key), 1)}(undef, n)
+    is = Vector{fieldtype(eltype(key), 2)}(undef, n)
+    # Collect live child positions, and count parent p's entries in
+    # ptr[p + 2], so the prefix sum leaves ptr[p + 1] at parent p's start.
+    resize!(ptr, pos_stop + 1)
+    fill!(ptr, 0)
+    ptr[1] = 1
+    k = 0
+    @inbounds for q in 1:qos_stop
+        p, i, state = key[q]
+        state == SPARSE_HASH_KEY_FREE && continue
+        k += 1
+        qs[k] = q
+        ps[k], is[k] = p, i
+        ps[k] < pos_stop && (ptr[ps[k] + 2] += 1)
+    end
+    @inbounds for p in 2:length(ptr)
+        ptr[p] += ptr[p - 1]
+    end
+    # Placing entries in index order leaves each parent's run sorted, and
+    # advances ptr[p + 1] from parent p's start to its stop.
+    resize!(perm, length(qs))
+    @inbounds for k in sortperm(is)
+        perm[ptr[ps[k] + 1]] = qs[k]
+        ptr[ps[k] + 1] += 1
+    end
+    extent = isempty(qs) ? 0 : last(qs)
+    resize!(key, extent)
+    return extent
+end
+
+# Checkpoint frozen bucket counts every `B` ranks (see the level's invariants).
+# Walking `perm` backward, each block starts from the one after it.
+function sparse_hash_count_buckets!(tbl_count, perm, key, B, pos_multiplier)
+    n = length(perm)
+    m = cld(n, B) + 1
+    resize!(tbl_count, m * B)
+    fill!(view(tbl_count, ((m - 1) * B + 1):(m * B)), 0)
+    @inbounds for j in (m - 1):-1:1
+        block = (j - 1) * B
+        copyto!(tbl_count, block + 1, tbl_count, block + B + 1, B)
+        for r in (block + 1):min(block + B, n)
+            p, i = key[perm[r]]
+            tbl_count[block + sparse_hash_hash_subtable(
+                sparse_hash_hash(p, i, pos_multiplier), B
+            )] += 1
+        end
+    end
+    return tbl_count
+end
+
+# Frozen bucket counts of ranks `r` onward: the checkpoint at or after `r`, plus
+# the fewer than `B` entries before it.
+function sparse_hash_counts_from(tbl_count, perm, key, B, r, pos_multiplier)
+    j = cld(r - 1, B) + 1
+    counts = tbl_count[((j - 1) * B + 1):(j * B)]
+    @inbounds for s in r:min((j - 1) * B, length(perm))
+        p, i = key[perm[s]]
+        counts[sparse_hash_hash_subtable(sparse_hash_hash(p, i, pos_multiplier), B)] += 1
+    end
+    return counts
+end
+
+# The head is local to a write phase. Recover free positions on thaw, including
+# holes left by coalesce; a dense set of child positions needs no scan.
+function sparse_hash_free_head!(key, perm)
+    free_head = zero(fieldtype(eltype(key), 1))
+    if length(perm) < length(key)
+        @inbounds for q in length(key):-1:1
+            _, i, state = key[q]
+            if state == SPARSE_HASH_KEY_FREE
+                key[q] = (free_head, i, SPARSE_HASH_KEY_FREE)
+                free_head = oftype(free_head, q)
+            end
+        end
+    end
+    return free_head
+end
+
+# Join a tentative entry by its stable child position.
+@inline function sparse_hash_share!(key, q)
+    @inbounds p, i, state = key[q]
+    state < SPARSE_HASH_KEY_RETAINED - 0x01 ||
+        error("SparseHash supports at most 127 pending writers per entry")
+    @inbounds key[q] = (p, i, state + 0x01)
+    return nothing
+end
+
+# Repair a linear-probing bucket after deleting h. Only slots move: child
+# positions, including those held by other unfinished writers, remain stable.
+@inline function sparse_hash_delete!(tbl_ctrl, tbl, key, h, x, subtables, pos_multiplier)
+    base, _, mask = sparse_hash_hash_slot_parts(x, length(tbl_ctrl), subtables)
+    hole = h - base
+    scan = (hole + 1) & mask
+    @inbounds while tbl_ctrl[base + scan] != SPARSE_HASH_CTRL_EMPTY
+        q = tbl[base + scan]
+        p, i, _ = key[q]
+        _, home, _ = sparse_hash_hash_slot_parts(
+            sparse_hash_hash(p, i, pos_multiplier), length(tbl_ctrl), subtables
+        )
+        if ((hole - home) & mask) < ((scan - home) & mask)
+            tbl_ctrl[base + hole] = tbl_ctrl[base + scan]
+            tbl[base + hole] = q
+            hole = scan
+        end
+        # An entry at home does not end a cluster in ordinary linear probing.
+        scan = (scan + 1) & mask
+    end
+    @inbounds tbl_ctrl[base + hole] = SPARSE_HASH_CTRL_EMPTY
+    return nothing
+end
+
+# Finish a tentative access through its stable child position. Only deleting
+# the last unretained writer needs to locate a table slot.
+@inline function sparse_hash_release!(
+    tbl_ctrl, tbl, key, q, x, subtables, dirty, free_head, pos_multiplier
+)
+    @inbounds begin
+        p, i, state = key[q]
+        state == SPARSE_HASH_KEY_RETAINED && return false
+        if dirty
+            key[q] = (p, i, SPARSE_HASH_KEY_RETAINED)
+        elseif state > 0x01
+            key[q] = (p, i, state - 0x01)
+        else
+            h = sparse_hash_find(tbl_ctrl, tbl, key, p, i, x, subtables)
+            sparse_hash_delete!(tbl_ctrl, tbl, key, h, x, subtables, pos_multiplier)
+            key[q] = (free_head, i, SPARSE_HASH_KEY_FREE)
+            return true
+        end
+    end
+    return false
+end
+
+# The first rank in `lo:hi` whose index is at least `x`, galloping from `lo`.
+Base.@propagate_inbounds function sparse_hash_scansearch(key, perm, x, lo, hi)
+    d = one(lo)
+    p = lo
+    while p < hi && key[perm[p]][2] < x
+        d <<= 0x01
+        p += d
+    end
+    lo = p - d
+    hi = min(p, hi) + one(lo)
+    while lo < hi - one(lo)
+        m = lo + ((hi - lo) >>> 0x01)
+        key[perm[m]][2] < x ? (lo = m) : (hi = m)
+    end
+    return hi
+end
+
+Base.summary(lvl::SparseHashLevel) = "SparseHash($(summary(lvl.lvl)))"
+function similar_level(
+    lvl::SparseHashLevel{Ti}, fill_value, eltype::Type, dim, tail...
+) where {Ti}
+    SparseHashLevel{Ti}(
+        similar_level(lvl.lvl, fill_value, eltype, tail...), dim, lvl.subtables,
+        lvl.pos_multiplier,
+    )
+end
+
+function coalesce_similar_level(lvl, P)
+    similar_level(
+        lvl, level_fill_value(typeof(lvl)), level_eltype(typeof(lvl)), level_size(lvl)...
+    )
+end
+function coalesce_similar_level(lvl::SparseHashLevel{Ti}, P) where {Ti}
+    P > 0 || throw(ArgumentError("Coalesce worker count must be positive"))
+    SparseHashLevel{Ti}(
+        coalesce_similar_level(lvl.lvl, P), lvl.shape, nextpow(2, P), lvl.pos_multiplier
+    )
+end
+
+postype(T::Type{<:SparseHashLevel}) = postype(fieldtype(T, :lvl))
+function Base.resize!(lvl::SparseHashLevel, dims...)
+    sparse_hash_with(lvl, resize!(lvl.lvl, dims[1:(end - 1)]...), dims[end])
+end
+pattern!(lvl::SparseHashLevel) = sparse_hash_with(lvl, pattern!(lvl.lvl))
+function set_fill_value!(lvl::SparseHashLevel, init)
+    sparse_hash_with(lvl, set_fill_value!(lvl.lvl, init))
+end
+function transfer(Tm, lvl::SparseHashLevel{Ti}) where {Ti}
+    SparseHashLevel{Ti}(
+        transfer(Tm, lvl.lvl), lvl.shape, lvl.subtables, lvl.pos_multiplier,
+        (transfer(Tm, getfield(lvl, f)) for f in SPARSE_HASH_BUFFERS)...,
+    )
+end
+
+function countstored_level_at(lvl, pos)
+    countstored_level(lvl, pos) - countstored_level(lvl, pos - 1)
+end
+# The entries under parents `1:pos`, then everything their children store.
+function countstored_level(lvl::SparseHashLevel, pos)
+    pos == 0 && return countstored_level(lvl.lvl, pos)
+    return sum(
+        r -> countstored_level_at(lvl.lvl, lvl.perm[r]), 1:(lvl.ptr[pos + 1] - 1); init=0
+    )
+end
+
+function Base.show(io::IO, lvl::SparseHashLevel{Ti}) where {Ti}
+    if get(io, :compact, false)
+        print(io, "SparseHash(")
+    else
+        print(io, "SparseHash{$Ti}(")
+    end
+    show(io, lvl.lvl)
+    print(io, ", ")
+    show(IOContext(io, :typeinfo => Ti), lvl.shape)
+    print(io, ", ", lvl.subtables)
+    if get(io, :compact, false)
+        print(io, ", …")
+    else
+        print(io, ", ")
+        show(io, lvl.pos_multiplier)
+        for f in SPARSE_HASH_BUFFERS
+            print(io, ", ")
+            show(io, getfield(lvl, f))
+        end
+    end
+    print(io, ")")
+end
+
+function labelled_show(io::IO, fbr::SubFiber{<:SparseHashLevel})
+    print(
+        io,
+        "SparseHash (",
+        fill_value(fbr),
+        ") [",
+        ":,"^(ndims(fbr) - 1),
+        "1:",
+        size(fbr)[end],
+        "]",
+    )
+end
+
+function labelled_children(fbr::SubFiber{<:SparseHashLevel})
+    lvl = fbr.lvl
+    pos = fbr.pos
+    pos + 1 > length(lvl.ptr) && return []
+    map(lvl.ptr[pos]:(lvl.ptr[pos + 1] - 1)) do r
+        q = lvl.perm[r]
+        LabelledTree(
+            cartesian_label([range_label() for _ in 1:(ndims(fbr) - 1)]..., lvl.key[q][2]),
+            SubFiber(lvl.lvl, q),
+        )
+    end
+end
+
+@inline level_ndims(T::Type{<:SparseHashLevel}) = 1 + level_ndims(fieldtype(T, :lvl))
+@inline level_size(lvl::SparseHashLevel) = (level_size(lvl.lvl)..., lvl.shape)
+@inline level_axes(lvl::SparseHashLevel) = (level_axes(lvl.lvl)..., Base.OneTo(lvl.shape))
+@inline level_eltype(T::Type{<:SparseHashLevel}) = level_eltype(fieldtype(T, :lvl))
+@inline level_fill_value(T::Type{<:SparseHashLevel}) = level_fill_value(fieldtype(T, :lvl))
+data_rep_level(T::Type{<:SparseHashLevel}) = SparseData(data_rep_level(fieldtype(T, :lvl)))
+
+function isstructequal(a::T, b::T) where {T<:SparseHash}
+    a.shape == b.shape && a.subtables == b.subtables &&
+        a.pos_multiplier == b.pos_multiplier &&
+        all(f -> getfield(a, f) == getfield(b, f), SPARSE_HASH_BUFFERS) &&
+        isstructequal(a.lvl, b.lvl)
+end
+
+(fbr::AbstractFiber{<:SparseHashLevel})() = fbr
+function (fbr::SubFiber{<:SparseHashLevel})(idxs...)
+    isempty(idxs) && return fbr
+    lvl = fbr.lvl
+    q = sparse_hash_lookup(
+        lvl.tbl_ctrl, lvl.tbl, lvl.key, fbr.pos, idxs[end], lvl.subtables,
+        lvl.pos_multiplier,
+    )
+    q == 0 ? fill_value(fbr) : SubFiber(lvl.lvl, q)(idxs[1:(end - 1)]...)
+end
+
+mutable struct VirtualSparseHashLevel <: AbstractVirtualLevel
+    tag
+    lvl
+    Ti
+    shape
+    subtables
+    pos_multiplier
+    # Buffers, in the order of SPARSE_HASH_BUFFERS.
+    ptr
+    tbl_ctrl
+    tbl
+    key
+    perm
+    tbl_count
+    # Assembly state shared by every access to this level within its task.
+    qos_stop
+    pending
+    free_head
+end
+
+function is_level_injective(ctx, lvl::VirtualSparseHashLevel)
+    [is_level_injective(ctx, lvl.lvl)..., false]
+end
+function is_level_atomic(ctx, lvl::VirtualSparseHashLevel)
+    (below, atomic) = is_level_atomic(ctx, lvl.lvl)
+    return ([below; [atomic]], atomic)
+end
+function is_level_concurrent(ctx, lvl::VirtualSparseHashLevel)
+    (data, _) = is_level_concurrent(ctx, lvl.lvl)
+    return ([data; [false]], false)
+end
+
+function virtualize(ctx, ex, T::Type{<:SparseHashLevel{Ti}}, tag=:lvl) where {Ti}
+    tag = freshen(ctx, tag)
+    buffers = map(f -> freshen(ctx, tag, Symbol(:_, f)), SPARSE_HASH_BUFFERS)
+    stop = freshen(ctx, tag, :_stop)
+    push_preamble!(
+        ctx,
+        quote
+            $tag = $ex
+            $((:($b = $tag.$f) for (b, f) in zip(buffers, SPARSE_HASH_BUFFERS))...)
+            $stop = $tag.shape
+        end,
+    )
+    lvl_2 = virtualize(ctx, :($tag.lvl), fieldtype(T, :lvl), tag)
+    VirtualSparseHashLevel(
+        tag, lvl_2, Ti, value(stop, Int), value(:($tag.subtables), Int),
+        value(:($tag.pos_multiplier), UInt), buffers..., freshen(ctx, tag, :_qos_stop),
+        freshen(ctx, tag, :_pending),
+        freshen(ctx, tag, :_free_head),
+    )
+end
+
+function lower(ctx::AbstractCompiler, lvl::VirtualSparseHashLevel, ::DefaultStyle)
+    quote
+        $SparseHashLevel{$(lvl.Ti)}(
+            $(ctx(lvl.lvl)), $(ctx(lvl.shape)), $(ctx(lvl.subtables)),
+            $(ctx(lvl.pos_multiplier)),
+            $((getfield(lvl, f) for f in SPARSE_HASH_BUFFERS)...),
+        )
+    end
+end
+
+function distribute_level(
+    ctx::AbstractCompiler, lvl::VirtualSparseHashLevel, arch, diff, style
+)
+    return diff[lvl.tag] = VirtualSparseHashLevel(
+        lvl.tag, distribute_level(ctx, lvl.lvl, arch, diff, style), lvl.Ti,
+        lvl.shape, lvl.subtables, lvl.pos_multiplier,
+        (
+            distribute_buffer(ctx, getfield(lvl, f), arch, style) for
+            f in SPARSE_HASH_BUFFERS
+        )...,
+        (freshen(ctx, lvl.tag, f) for f in (:qos_stop, :pending, :free_head))...,
+    )
+end
+
+function redistribute(ctx::AbstractCompiler, lvl::VirtualSparseHashLevel, diff)
+    get(diff, lvl.tag) do
+        fields = map(f -> getfield(lvl, f), fieldnames(VirtualSparseHashLevel))
+        VirtualSparseHashLevel(lvl.tag, redistribute(ctx, lvl.lvl, diff), fields[3:end]...)
+    end
+end
+
+Base.summary(lvl::VirtualSparseHashLevel) = "SparseHash($(summary(lvl.lvl)))"
+
+function virtual_level_size(ctx, lvl::VirtualSparseHashLevel)
+    ext = virtual_call(ctx, extent, literal(lvl.Ti(1)), lvl.shape)
+    (virtual_level_size(ctx, lvl.lvl)..., ext)
+end
+
+function virtual_level_resize!(ctx, lvl::VirtualSparseHashLevel, dims...)
+    lvl.shape = getstop(dims[end])
+    lvl.lvl = virtual_level_resize!(ctx, lvl.lvl, dims[1:(end - 1)]...)
+    lvl
+end
+
+virtual_level_eltype(lvl::VirtualSparseHashLevel) = virtual_level_eltype(lvl.lvl)
+virtual_level_fill_value(lvl::VirtualSparseHashLevel) = virtual_level_fill_value(lvl.lvl)
+@inline sample_dims(lvl::VirtualSparseHashLevel) = 1 + sample_dims(lvl.lvl)
+@inline all_dense(::VirtualSparseHashLevel) = false
+
+postype(lvl::VirtualSparseHashLevel) = postype(lvl.lvl)
+
+function declare_level!(ctx::AbstractCompiler, lvl::VirtualSparseHashLevel, pos, init)
+    #TODO check that init == fill_value
+    push_preamble!(
+        ctx,
+        quote
+            Galley.sparse_hash_clear!(
+                $(lvl.tbl_ctrl), $(lvl.tbl), $(lvl.key), $(lvl.perm), $(ctx(lvl.subtables)),
+                $(ctx(lvl.pos_multiplier)),
+            )
+            empty!($(lvl.key))
+            empty!($(lvl.perm))
+            fill!($(lvl.tbl_count), 0)
+            $(lvl.qos_stop) = 0
+            $(lvl.pending) = 0
+            $(lvl.free_head) = zero($(postype(lvl)))
+        end,
+    )
+    lvl.lvl = declare_level!(ctx, lvl.lvl, literal(postype(lvl)(0)), init)
+    return lvl
+end
+
+assemble_level!(ctx, lvl::VirtualSparseHashLevel, pos_start, pos_stop) = quote end
+
+function freeze_level!(ctx::AbstractCompiler, lvl::VirtualSparseHashLevel, pos_stop)
+    pos_stop = cache!(ctx, :pos_stop, simplify(ctx, pos_stop))
+    qos_stop = freshen(ctx, :qos_stop)
+    push_preamble!(
+        ctx,
+        quote
+            $(lvl.pending) == 0 || error("SparseHash has unfinished writers during freeze")
+            $qos_stop = Galley.sparse_hash_freeze!(
+                $(lvl.ptr), $(lvl.perm), $(lvl.key),
+                $(ctx(pos_stop)), $(lvl.qos_stop),
+            )
+            Galley.sparse_hash_count_buckets!(
+                $(lvl.tbl_count), $(lvl.perm), $(lvl.key), $(ctx(lvl.subtables)),
+                $(ctx(lvl.pos_multiplier)),
+            )
+        end,
+    )
+    lvl.lvl = freeze_level!(ctx, lvl.lvl, value(qos_stop))
+    return lvl
+end
+
+# Frozen, `key` spans exactly the child positions, and `tbl_count`'s first block
+# is exact; assembly uses only that block.
+function thaw_level!(ctx::AbstractCompiler, lvl::VirtualSparseHashLevel, pos_stop)
+    push_preamble!(
+        ctx,
+        quote
+            $(lvl.qos_stop) = length($(lvl.key))
+            $(lvl.pending) = 0
+            $(lvl.free_head) = Galley.sparse_hash_free_head!($(lvl.key), $(lvl.perm))
+        end,
+    )
+    lvl.lvl = thaw_level!(ctx, lvl.lvl, value(lvl.qos_stop))
+    return lvl
+end
+
+function unfurl(
+    ctx,
+    fbr::VirtualSubFiber{VirtualSparseHashLevel},
+    ext,
+    mode,
+    ::Union{typeof(defaultread),typeof(walk)},
+)
+    (lvl, pos) = (fbr.lvl, fbr.pos)
+    tag = lvl.tag
+    Tp = postype(lvl)
+    Ti = lvl.Ti
+    my_r = freshen(ctx, tag, :_r)
+    my_r_stop = freshen(ctx, tag, :_r_stop)
+    my_i = freshen(ctx, tag, :_i)
+    my_i1 = freshen(ctx, tag, :_i1)
+    my_q = freshen(ctx, tag, :_q)
+    idx(r) = :($(lvl.key)[$(lvl.perm)[$r]][2])
+
+    Thunk(;
+        preamble=quote
+            $my_r = $(lvl.ptr)[$(ctx(pos))]
+            $my_r_stop = $(lvl.ptr)[$(ctx(pos)) + $(Tp(1))]
+            if $my_r < $my_r_stop
+                $my_i = $(idx(my_r))
+                $my_i1 = $(idx(:($my_r_stop - $(Tp(1)))))
+            else
+                $my_i = $(Ti(1))
+                $my_i1 = $(Ti(0))
+            end
+        end,
+        body=(ctx) -> Sequence([
+            Phase(;
+                stop=(ctx, ext) -> value(my_i1),
+                body=(ctx, ext) -> Stepper(;
+                    seek=(ctx, ext) -> quote
+                        if $(idx(my_r)) < $(ctx(getstart(ext)))
+                            $my_r = Galley.sparse_hash_scansearch(
+                                $(lvl.key), $(lvl.perm), $(ctx(getstart(ext))),
+                                $my_r,
+                                $my_r_stop - 1,
+                            )
+                        end
+                    end,
+                    preamble=quote
+                        $my_q = $(lvl.perm)[$my_r]
+                        $my_i = $(lvl.key)[$my_q][2]
+                    end,
+                    stop=(ctx, ext) -> value(my_i),
+                    chunk=Spike(;
+                        body=FillLeaf(virtual_level_fill_value(lvl)),
+                        tail=Simplify(
+                            instantiate(
+                                ctx, VirtualSubFiber(lvl.lvl, value(my_q, Tp)), mode
+                            ),
+                        ),
+                    ),
+                    next=(ctx, ext) -> :($my_r += $(Tp(1))),
+                ),
+            ),
+            Phase(; body=(ctx, ext) -> Run(FillLeaf(virtual_level_fill_value(lvl)))),
+        ]),
+    )
+end
+
+function unfurl(
+    ctx, fbr::VirtualSubFiber{VirtualSparseHashLevel}, ext, mode, ::typeof(follow)
+)
+    (lvl, pos) = (fbr.lvl, fbr.pos)
+    my_q = freshen(ctx, lvl.tag, :_q)
+    Lookup(;
+        body=(ctx, i) -> Thunk(;
+            preamble=quote
+                $my_q = Galley.sparse_hash_lookup(
+                    $(lvl.tbl_ctrl), $(lvl.tbl), $(lvl.key), $(ctx(pos)), $(ctx(i)),
+                    $(ctx(lvl.subtables)), $(ctx(lvl.pos_multiplier)),
+                )
+            end,
+            body=(ctx) -> Switch([
+                value(:($my_q != 0)) =>
+                    instantiate(
+                        ctx,
+                        VirtualSubFiber(lvl.lvl, value(my_q, postype(lvl))),
+                        mode,
+                    ),
+                literal(true) => FillLeaf(virtual_level_fill_value(lvl)),
+            ]),
+        ),
+    )
+end
+
+function unfurl(
+    ctx,
+    fbr::VirtualSubFiber{VirtualSparseHashLevel},
+    ext,
+    mode,
+    proto::Union{typeof(defaultupdate),typeof(extrude)},
+)
+    unfurl(
+        ctx, VirtualHollowSubFiber(fbr.lvl, fbr.pos, freshen(ctx, :null)), ext, mode, proto
+    )
+end
+
+function unfurl(
+    ctx,
+    fbr::VirtualHollowSubFiber{VirtualSparseHashLevel},
+    ext,
+    mode,
+    ::Union{typeof(defaultupdate),typeof(extrude)},
+)
+    (lvl, pos) = (fbr.lvl, fbr.pos)
+    tag = lvl.tag
+    Tp = postype(lvl)
+    B = ctx(lvl.subtables)
+    pos_multiplier = ctx(lvl.pos_multiplier)
+    (tbl_ctrl, tbl, key, tbl_count, qos_stop) = (
+        lvl.tbl_ctrl, lvl.tbl, lvl.key, lvl.tbl_count, lvl.qos_stop
+    )
+    pending, free_head = lvl.pending, lvl.free_head
+    p, i, x, b, h, s, qos, old, q_stop, dirty = map(
+        v -> freshen(ctx, tag, v),
+        (:_p, :_i, :_x, :_b, :_h, :_s, :_qos, :_old, :_q_stop, :_dirty),
+    )
+
+    Thunk(;
+        body=(ctx) -> Lookup(;
+            body=(ctx, idx) -> Thunk(;
+                preamble=quote
+                    $p = $(ctx(pos))
+                    $i = $(ctx(idx))
+                    $x = Galley.sparse_hash_hash($p, $i, $pos_multiplier)
+                    $b = Galley.sparse_hash_hash_subtable($x, $B)
+                    # Grow before probing, so the probed slot stays valid if the
+                    # key turns out to be new.
+                    if 2 * $B * ($tbl_count[$b] + 1) > length($tbl_ctrl)
+                        Galley.sparse_hash_resize!(
+                            $tbl_ctrl, $tbl, $key,
+                            max(2 * length($tbl_ctrl), 4 * $B), $B, $pos_multiplier,
+                            $qos_stop,
+                        )
+                    end
+                    $h = Galley.sparse_hash_find($tbl_ctrl, $tbl, $key, $p, $i, $x, $B)
+                    $s = true
+                    if $tbl_ctrl[$h] == Galley.SPARSE_HASH_CTRL_EMPTY
+                        # A new key: count it in its bucket and give it a child.
+                        $tbl_count[$b] += 1
+                        if $free_head == 0
+                            $qos = $Tp($qos_stop += 1)
+                        else
+                            $qos = $free_head
+                            $free_head = $key[$qos][1]
+                        end
+                        if $qos > length($key)
+                            $old = length($key) + 1
+                            $q_stop = max(2 * length($key), $qos)
+                            resize!($key, $q_stop)
+                            $(contain(
+                                ctx_2 -> assemble_level!(
+                                    ctx_2, lvl.lvl, value(old, Tp),
+                                    value(q_stop, Tp),
+                                ),
+                                ctx,
+                            ))
+                        end
+                        $key[$qos] = ($p, $i, 0x01)
+                        $tbl_ctrl[$h] = Galley.sparse_hash_hash_ctrl($x)
+                        $tbl[$h] = $qos
+                    else
+                        $qos = $tbl[$h]
+                        $s = $key[$qos][3] != Galley.SPARSE_HASH_KEY_RETAINED
+                        $s && Galley.sparse_hash_share!($key, $qos)
+                    end
+                    $s && ($pending += 1)
+                    $dirty = false
+                end,
+                body=(ctx) -> instantiate(
+                    ctx, VirtualHollowSubFiber(lvl.lvl, value(qos, Tp), dirty),
+                    mode,
+                ),
+                epilogue=quote
+                    $dirty && ($(fbr.dirty) = true)
+                    if $s
+                        if Galley.sparse_hash_release!(
+                            $tbl_ctrl, $tbl, $key, $qos, $x, $B, $dirty, $free_head,
+                            $pos_multiplier,
+                        )
+                            $tbl_count[$b] -= 1
+                            $free_head = $Tp($qos)
+                        end
+                        $pending -= 1
+                    end
+                end,
+            ),
+        ),
+    )
+end
+
+# A sampled child position names its key directly. Positions freed
+# by unretained writes own no entry, so their samples are redrawn.
+function sample(tid, lvl::SparseHashLevel)
+    key = lvl.key.data[tid]
+    isempty(lvl.perm.data[tid]) &&
+        throw(ArgumentError("Cannot sample an empty SparseHash shard"))
+    while true
+        tup, q = sample(tid, lvl.lvl)
+        p, i, state = key[q]
+        state == SPARSE_HASH_KEY_RETAINED && return (tup..., i), p
+    end
+end
+
+# The extra rotations a shift by `delta` can carry into. With one bucket, both
+# rotations name the same bucket.
+sparse_hash_carries(delta, B) = delta == 0 || B == 1 ? (0,) : (0, 1)
+
+# Prepare hash storage and child offsets. Children keep their positions: shard
+# `t`'s child `q` lands at `q + child_shift[t]`, except that its shared entry's
+# child lands at the owner's `shared_dst[t]`.
+# Splits and offsets for shard child positions `1:n`, which add `offset` except
+# the shared child `q` (if nonzero), which moves to `q_dst`.
+function hash_child_ranges(offset, q, q_dst, n)
+    if q == 0
+        ([1, n + 1], [1 + offset])
+    else
+        ([1, q, q + 1, n + 1], [1 + offset, q_dst, q + 1 + offset])
+    end
+end
+
+function setup_coalesce!(lvl::SparseHashLevel, max_pos, dst, P, splits, offsets, overlap)
+    key = lvl.key.data
+    perm = lvl.perm.data
+    ptr = lvl.ptr.data
+    B = dst.subtables
+    lvl.subtables == B ||
+        throw(ArgumentError("Coalescing hashes must use the same bucket count"))
+    lvl.pos_multiplier == dst.pos_multiplier ||
+        throw(ArgumentError("Coalescing hashes must use the same position multiplier"))
+    # Shard t's local rank r, as (parent, index, child position).
+    function entry(t, r)
+        q = perm[t][r]
+        p, i, _ = key[t][q]
+        return p, i, q
+    end
+    child_shift = cumsum([0; [length(key[t]) for t in 1:(P - 1)]])
+    max_child_pos = sum(length, key; init=0)
+
+    # Shifting parents by `delta` moves an entry's bucket up by `rotation(delta)`,
+    # or by one more where its hash carries, and only placement can tell which.
+    # So each range of a shard adds its entries' frozen bucket counts, from
+    # checkpoints, rotated as if nothing carries. Carries in and out of a bucket
+    # mostly cancel, so these counts size the buckets. Shifted entries can still
+    # carry one bucket up, which `carried` tracks so no bucket fills. Shared
+    # entries stay counted, which only overestimates. Placement gathers once per
+    # distinct shift of each shard.
+    function rotation(delta)
+        sparse_hash_hash_subtable(lvl.pos_multiplier * (delta % UInt), B) - 1
+    end
+    rotate(b, k) = ((b - 1 + k) & (B - 1)) + 1
+    rank(t, p) =
+        if p < 1
+            1
+        elseif p <= length(ptr[t])
+            ptr[t][p]
+        else
+            length(perm[t]) + 1
+        end
+    bucket_counts = zeros(Int, B)
+    carried = zeros(Int, B)
+    shifts = [Int[] for _ in 1:P]
+    for t in 1:P
+        function counts_from(r)
+            sparse_hash_counts_from(
+                lvl.tbl_count.data[t], perm[t], key[t], B, r, lvl.pos_multiplier
+            )
+        end
+        for k in eachindex(offsets[t])
+            lo, hi = rank(t, splits[t][k]), rank(t, splits[t][k + 1])
+            lo < hi || continue
+            delta = offsets[t][k] - splits[t][k]
+            counts = counts_from(lo) .- counts_from(hi)
+            for c in sparse_hash_carries(delta, B), b in 1:B
+                (c == 0 ? bucket_counts : carried)[rotate(b, rotation(delta) + c)] += counts[b]
+            end
+            delta in shifts[t] || push!(shifts[t], delta)
+        end
+    end
+    # Bucket `b` receives at most its uncarried entries and the carries from below.
+    bucket_bound = bucket_counts .+ carried
+    rotations = [rotation.(d) for d in shifts]
+
+    # Piece `(lo, hi, start, dup, prev, delta)` puts ranks `lo:hi` at consecutive
+    # ranks from `start`, their parents moved by `delta`, skipping `lo` when it
+    # repeats the entry before it (`dup`); `prev` is the parent before the piece.
+    # Only `perm` and `ptr` make room for moved runs: children keep their
+    # positions. Setup reads only the pieces' boundary entries.
+    pieces = [NTuple{6,Int}[] for _ in 1:P]
+    shared = zeros(Int, P)
+    shared_dst = zeros(Int, P)
+    nnz = 0
+    last_key = nothing
+    last_child = 0
+    parent(t, r) = searchsortedlast(ptr[t], r)
+    for (t, lo, hi, delta) in shard_runs(splits, offsets, rank, parent)
+        dup = false
+        if last_key !== nothing
+            p, i, q = entry(t, lo)
+            if (p + delta, i) == last_key
+                dup = true
+                shared[t] = q
+                shared_dst[t] = last_child
+            end
+        end
+        push!(
+            pieces[t],
+            (lo, hi, nnz + 1, dup, last_key === nothing ? 0 : first(last_key), delta),
+        )
+        nnz += hi - lo + 1 - dup
+        p, i, q = entry(t, hi)
+        last_key = (p + delta, i)
+        dup && hi == lo || (last_child = q + child_shift[t])
+    end
+
+    # Probing cannot leave its bucket, so size every bucket for the busiest, and
+    # keep an empty slot in every bucket, even if all carries pile into one.
+    capacity =
+        B * max(
+            sparse_hash_table_capacity(maximum(bucket_counts)),
+            nextpow(2, maximum(bucket_bound) + 1),
+        )
+    for (buf, n) in ((dst.ptr, max_pos + 1), (dst.tbl_ctrl, capacity), (dst.tbl, capacity),
+        (dst.key, max_child_pos), (dst.perm, nnz))
+        empty!(buf)
+        resize!(buf, n)
+    end
+    # The merge's output holds only the bucket totals, which bucket owners count
+    # as they place entries.
+    resize!(dst.tbl_count, B)
+    child_ranges = [
+        hash_child_ranges(child_shift[t], shared[t], shared_dst[t], length(key[t]))
+        for t in 1:P
+    ]
+    child = setup_coalesce!(
+        lvl.lvl, max_child_pos, dst.lvl, P, first.(child_ranges), last.(child_ranges),
+        overlap && any(!iszero, shared),
+    )
+    init = ((dst.tbl_ctrl, 1, SPARSE_HASH_CTRL_EMPTY), child.init...)
+    nnz == 0 && (init = (init..., (dst.ptr, 1, 1)))
+    return (; P, splits, offsets, shifts, rotations, pieces, shared, shared_dst, nnz,
+        child_shift, max_child_pos, bucket_counts, bucket_bound, child, init)
+end
+
+# Worker `tid` copies shard `tid`'s keys, traversal order, and children, and
+# fills output buckets `tid:P:B` from every shard, so each bucket has one writer.
+# Parents that shift uniformly rotate a source bucket onto one output bucket, or
+# the next where hashes carry, so each output bucket gathers from at most two
+# rotated source buckets per distinct shift, and counts what it places.
+function coalesce_shard!(
+    tid, plan, lvl::SparseHashLevel, dst, runs, (p_lo, i_lo), (p_hi, i_hi)
+)
+    key = lvl.key.data[tid]
+    perm = lvl.perm.data[tid]
+    child_shift = plan.child_shift[tid]
+    # Holes and shared duplicates stay free. Retained child records are copied
+    # below, with the traversal permutation.
+    @inbounds for q in eachindex(key)
+        if key[q][3] == SPARSE_HASH_KEY_FREE || q == plan.shared[tid]
+            dst.key[q + child_shift] = (0, 0, SPARSE_HASH_KEY_FREE)
+        end
+    end
+    for (lo, hi, start, dup, prev, delta) in plan.pieces[tid]
+        for r in (lo + dup):hi
+            rank = start + r - lo - dup
+            q = perm[r]
+            p, i = key[q]
+            x = p + delta
+            dst.key[q + child_shift] = (x, i, SPARSE_HASH_KEY_RETAINED)
+            dst.perm[rank] = q + child_shift
+            for y in (prev + 1):x
+                dst.ptr[y] = rank
+            end
+            if rank == plan.nnz
+                for y in (x + 1):length(dst.ptr)
+                    dst.ptr[y] = rank + 1
+                end
+            end
+            prev = x
+        end
+    end
+
+    B = dst.subtables
+    # Place shard `t`'s entries whose parents move by its `j`th shift and land in
+    # output bucket `b`, returning how many. They come from the source bucket
+    # that shift rotates onto `b`, or, where their hash carries, the one below.
+    # Keys are distinct after dropping shared entries, so place without comparing.
+    function gather!(b, t, j)
+        src_ctrl = lvl.tbl_ctrl.data[t]
+        src_tbl = lvl.tbl.data[t]
+        splits, offsets = plan.splits[t], plan.offsets[t]
+        delta = plan.shifts[t][j]
+        mixed = length(plan.shifts[t]) > 1
+        width = length(src_ctrl) ÷ B
+        placed = 0
+        for c in sparse_hash_carries(delta, B)
+            src_b = ((b - 1 - plan.rotations[t][j] - c) & (B - 1)) + 1
+            for h in ((src_b - 1) * width + 1):(src_b * width)
+                src_ctrl[h] == SPARSE_HASH_CTRL_EMPTY && continue
+                q = src_tbl[h]
+                q == plan.shared[t] && continue
+                p, i = lvl.key.data[t][q]
+                if mixed
+                    k = searchsortedlast(splits, p)
+                    offsets[k] - splits[k] == delta || continue
+                end
+                x = sparse_hash_hash(p + delta, i, dst.pos_multiplier)
+                sparse_hash_hash_subtable(x, B) == b || continue
+                h_dst = sparse_hash_vacancy(dst.tbl_ctrl, x, B)
+                dst.tbl_ctrl[h_dst] = sparse_hash_hash_ctrl(x)
+                dst.tbl[h_dst] = q + plan.child_shift[t]
+                placed += 1
+            end
+        end
+        return placed
+    end
+    for b in tid:(plan.P):B
+        dst.tbl_count[b] = 0
+        for t in 1:(plan.P), j in eachindex(plan.shifts[t])
+            dst.tbl_count[b] += gather!(b, t, j)
+        end
+    end
+
+    # Recurse on every entry, owned or not: a shared entry's children are split
+    # between both shards. The band's bounds pass to the children of the entries
+    # on them.
+    function entry(p, i)
+        sparse_hash_lookup(
+            lvl.tbl_ctrl.data[tid], lvl.tbl.data[tid], key, p, i, lvl.subtables,
+            lvl.pos_multiplier,
+        )
+    end
+    coalesce_shard!(
+        tid, plan.child, lvl.lvl, dst.lvl, (q:q for q in perm),
+        (entry(p_lo, i_lo[end]), Base.front(i_lo)),
+        (entry(p_hi, i_hi[end]), Base.front(i_hi)),
+    )
+end

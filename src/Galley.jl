@@ -1,170 +1,431 @@
-# This file defines a prototype front-end which allows users to define tensor expressions and get their results.
 module Galley
 
-using AutoHashEquals
-using Base: hash, copy, convert, getproperty, getfield, setfield!, getindex, ==, show
-using DataStructures
-using IterTools: subsets
+using AcceleratedKernels: AcceleratedKernels
+
+@static if !isdefined(Base, :get_extension)
+    using Requires
+end
+
+using AbstractTrees
+using SyntaxInterface
 using RewriteTools
 using RewriteTools.Rewriters
-using SyntaxInterface
-using AbstractTrees
+using Base.Iterators
+using Base: @kwdef
+using Random: AbstractRNG, default_rng, randexp, randperm
+using PrecompileTools
+using Compat
+using DataStructures
 using Statistics
-using Finch
-using Finch: Element, SparseListLevel, SparseDict, Dense, SparseCOO, fsparse_impl, compute_parse, 
-                        isimmediate, set_options, flatten_plans
-using Finch.FinchNotation: index_instance, variable_instance, tag_instance, literal_instance,
-                        access_instance,  assign_instance, loop_instance, declare_instance,
-                        block_instance, define_instance, call_instance, freeze_instance,
-                        thaw_instance, finch_unparse_program,
-                        Updater, Reader, Dimensionless
-using Finch.FinchLogic
+using JSON
+using Distributions: Binomial, Normal, Poisson
+using TOML
+using UUIDs
+using Preferences
+using UnsafeAtomics
 
-export galley
-export PlanNode, Value, Index, Alias, Input, MapJoin, Aggregate, Materialize, Query, Outputs, Plan, IndexExpr
-export Scalar, OutTensor, RenameIndices, declare_binary_operator, Σ, Mat, Agg
-export DCStats, NaiveStats, TensorDef, DC, insert_statistics
-export naive, greedy, pruned, exact
-export GalleyOptimizer, galley_scheduler
+export @finch, @finch_program, @finch_code, @finch_kernel, value
 
-IndexExpr = Symbol
-TensorId = Symbol
-# This defines the list of access protocols allowed by the Finch API
-@enum AccessProtocol t_walk = 1 t_lead = 2 t_follow = 3 t_gallop = 4 t_default = 5
-# A subset of the allowed level formats provided by the Finch API
-@enum LevelFormat t_sparse_list = 1 t_coo = 2 t_dense = 3 t_hash = 4 t_bytemap = 5 t_undef = 6
-# The set of optimizers implemented by Galley
-@enum FAQ_OPTIMIZERS greedy naive pruned exact
+export Tensor
+export DenseFormat,
+    CSFFormat, CSCFormat, DCSFFormat, DCSCFormat, HashFormat, ByteMapFormat, COOFormat
+export SparseRunList, SparseRunListLevel
+export RunList, RunListLevel
+export SparseInterval, SparseIntervalLevel
+export Sparse, SparseLevel
+export SparseList, SparseListLevel
+export SparseDict, SparseDictLevel
+export SparseHash, SparseHashLevel
+export ParallelSparseDict, ParallelSparseDictLevel
+export SparsePoint, SparsePointLevel
+export SparseBand, SparseBandLevel
+export SparseCOO, SparseCOOLevel
+export SparseByteMap, SparseByteMapLevel
+export SparseBlockList, SparseBlockListLevel
+export Dense, DenseLevel
+export Element, ElementLevel
+export AtomicElement, AtomicElementLevel
+export Separate, SeparateLevel
+export Shard, ShardLevel
+export Coalesce, CoalesceLevel
+export Mutex, MutexLevel
+export Pattern, PatternLevel
+export Scalar, SparseScalar, ShortCircuitScalar, SparseShortCircuitScalar
+export walk, gallop, follow, extrude, laminate
+export Tensor, pattern!, dropfills, dropfills!, set_fill_value!
+export diagmask, lotrimask, uptrimask, bandmask, splitmask, chunkmask
+export pairsummask, paircarrymask, reversemask, rollmask, repeatmask, onehotmask, paritymask
+export oddevenmergesortpartnermask, oddevenmergesortlowermask, reshapemask
+export randommask
+export scale, products, offset, permissive, protocolize, swizzle, toeplitz, window
+export PlusOneVector
 
-name_counter::UInt64 = 0
+export lazy, compute, fused, tensordot, @einsum
 
-function galley_gensym(s::String)
-    global name_counter += 1
-    return Symbol(s*"_$name_counter")
+export choose, minby, maxby, overwrite, initwrite, filterop, d
+
+export fill_value, AsArray, expanddims, tensor_tree
+
+export parallelAnalysis, ParallelAnalysisResults
+export parallel, extent, auto
+export Serial, SerialMemory, CPU, CPULocalArray, CPULocalMemory
+export static_schedule, greedy_schedule, julia_schedule
+export serial, cpu
+
+export Limit, Eps
+
+struct FinchProtocolError <: Exception
+    msg::String
 end
-galley_gensym(s::Symbol) = galley_gensym(string(s))
 
-include("finch-algebra_ext.jl")
-include("utility-funcs.jl")
-include("PlanAST/PlanAST.jl")
-include("TensorStats/TensorStats.jl")
-include("LogicalOptimizer/LogicalOptimizer.jl")
-include("PhysicalOptimizer/PhysicalOptimizer.jl")
-include("CSEElimination/CSEElimination.jl")
-include("ExecutionEngine/ExecutionEngine.jl")
-include("FinchCompat/FinchCompat.jl")
+struct FinchExtensionError <: Exception
+    msg::String
+end
 
-# Galley takes in a series of high level queries which define required outputs.
-# Each query has the form:
-#       Query(name, Materialize(formats..., indices..., expr))
-# The inner expr can be any combination of MapJoin(op, args...) and Aggregate(op, init, idxs..., arg)
-# with the leaves being Input(tns, idxs...), Alias(name, init, idxs...), or Value(v) where name refers
-# to the results of a previous query.
-function galley(input_plan::PlanNode;
-                    faq_optimizer::FAQ_OPTIMIZERS=greedy,
-                    ST=DCStats,
-                    update_cards=true,
-                    simple_cse=true,
-                    max_kernel_size=8,
-                    output_logical_plan=false,
-                    output_physical_plan=false,
-                    output_aliases = nothing,
-                    output_program_instance = false,
-                    verbose=0)
+struct NotImplementedError <: Exception
+    msg::String
+end
 
-    if input_plan.kind == Materialize
-        input_plan = Query(:out, input_plan)
+const FINCH_VERSION = VersionNumber(
+    TOML.parsefile(joinpath(dirname(@__DIR__), "Project.toml"))["version"]
+)
+
+include("util/convenience.jl")
+include("util/special_functions.jl")
+include("util/shims.jl")
+include("util/limits.jl")
+include("util/staging.jl")
+include("util/style.jl")
+include("util/vectors.jl")
+include("util/merging.jl")
+
+include("environment.jl")
+
+include("FinchNotation/FinchNotation.jl")
+using .FinchNotation
+using .FinchNotation: and, or, InitWriter
+
+include("abstract_tensor.jl")
+include("dimensions.jl")
+include("architecture.jl")
+include("scopes.jl")
+include("lower.jl")
+
+include("transforms/exit_on_yieldbind.jl")
+include("transforms/enforce_scopes.jl")
+include("transforms/enforce_lifecycles.jl")
+include("transforms/concordize.jl")
+include("transforms/wrapperize.jl")
+include("transforms/dimensionalize.jl")
+include("transforms/evaluate.jl")
+include("transforms/concurrent.jl")
+
+include("symbolic/symbolic.jl")
+
+include("looplets/thunks.jl")
+include("looplets/short_circuits.jl")
+include("looplets/lookups.jl")
+include("looplets/nulls.jl")
+include("looplets/runs.jl")
+include("looplets/spikes.jl")
+include("looplets/switches.jl")
+include("looplets/phases.jl")
+include("looplets/sequences.jl")
+include("looplets/jumpers.jl")
+include("looplets/steppers.jl")
+include("looplets/fills.jl")
+
+include("tensors/scalars.jl")
+include("tensors/abstract_level.jl")
+include("tensors/tensors.jl")
+include("tensors/levels/sparse_rle_levels.jl")
+include("tensors/levels/sparse_interval_levels.jl")
+include("tensors/levels/sparse_hash_levels.jl")
+include("tensors/levels/sparse_list_levels.jl")
+include("tensors/levels/sparse_point_levels.jl")
+include("tensors/levels/sparse_coo_levels.jl")
+include("tensors/levels/sparse_band_levels.jl")
+include("tensors/levels/sparse_dict_levels.jl")
+include("tensors/levels/parallel_sparse_dict_levels.jl")
+include("tensors/levels/sparse_bytemap_levels.jl")
+include("tensors/levels/sparse_vbl_levels.jl")
+include("tensors/levels/dense_levels.jl")
+include("tensors/levels/dense_rle_levels.jl")
+include("tensors/levels/element_levels.jl")
+include("tensors/levels/atomic_element_levels.jl")
+include("tensors/levels/coalesce_levels.jl")
+include("tensors/levels/separate_levels.jl")
+include("tensors/levels/shard_levels.jl")
+include("tensors/levels/mutex_levels.jl")
+include("tensors/levels/pattern_levels.jl")
+include("tensors/masks.jl")
+include("tensors/abstract_combinator.jl")
+include("tensors/combinators/unfurled.jl")
+include("tensors/combinators/protocolized.jl")
+include("tensors/combinators/roots.jl")
+include("tensors/combinators/permissive.jl")
+include("tensors/combinators/offset.jl")
+include("tensors/combinators/toeplitz.jl")
+include("tensors/combinators/windowed.jl")
+include("tensors/combinators/swizzle.jl")
+include("tensors/combinators/scale.jl")
+include("tensors/combinators/product.jl")
+
+const Sparse = SparseDictLevel
+const SparseLevel = SparseDictLevel
+
+"""
+    DenseFormat(N, z = 0.0, T = typeof(z))
+
+A dense format with a fill value of `z`.
+"""
+function DenseFormat(N, z=0.0, T=typeof(z))
+    fmt = ElementLevel{z,T}()
+    for i in 1:N
+        fmt = DenseLevel(fmt)
     end
-    if input_plan.kind == Query
-        input_plan = Plan(input_plan)
-    end
-    counter_start = Galley.name_counter
+    fmt
+end
 
-    overall_start = time()
-    # To avoid input corruption, we start by copying the input queries (except for the data)
-    input_plan = plan_copy(input_plan)
-    if verbose >= 1
-        println("Input Queries : ")
-        for input_query in input_plan.queries
-            println(input_query)
+"""
+    CSFFormat(N, z = 0.0, T = typeof(z))
+
+An `N`-dimensional CSC format with a fill value of `z`.
+CSF supports random access in the rightmost index, and uses
+a tree structure to store the rest of the data.
+"""
+function CSFFormat(N, z=0.0, T=Float64)
+    fmt = ElementLevel{z,T}()
+    for i in 1:(N - 1)
+        fmt = SparseListLevel(fmt)
+    end
+    DenseLevel(fmt)
+end
+
+"""
+    CSCFormat(z = 0.0, T = typeof(z))
+
+A CSC format with a fill value of `z`. CSC stores a sparse matrix as a
+dense array of lists.
+"""
+CSCFormat(z=0.0, T=typeof(z)) = CSFFormat(2, z, T)
+
+"""
+    DCSFFormat(z = 0.0, T = typeof(z))
+
+A DCSF format with a fill value of `z`. DCSF stores a sparse tensor as a
+list of lists of lists.
+"""
+function DCSFFormat(N, z=0.0, T=typeof(z))
+    fmt = ElementLevel{z,T}()
+    for i in 1:N
+        fmt = SparseListLevel(fmt)
+    end
+    fmt
+end
+
+"""
+    DCSCFormat(z = 0.0, T = typeof(z))
+
+A DCSC format with a fill value of `z`. DCSC stores a sparse matrix as a
+list of lists.
+"""
+DCSCFormat(z=0.0, T=typeof(z)) = DCSFFormat(2, z, T)
+
+"""
+    HashFormat(N, z = 0.0, T = typeof(z))
+
+A hash-table based format with a fill value of `z`.
+"""
+function HashFormat(N, z=0.0, T=typeof(z))
+    fmt = ElementLevel{z,T}()
+    for i in 1:(N - 1)
+        fmt = SparseDictLevel(fmt)
+    end
+    DenseLevel(fmt)
+end
+
+"""
+    ByteMapFormat(N, z = 0.0, T = typeof(z))
+
+A byte-map based format with a fill value of `z`.
+"""
+function ByteMapFormat(N, z=0.0, T=typeof(z))
+    fmt = ElementLevel{z,T}()
+    for i in 1:N
+        fmt = SparseByteMapLevel(fmt)
+    end
+    fmt
+end
+
+"""
+    COOFormat(N, z = 0.0, T = typeof(z))
+
+An `N`-dimensional COO format with a fill value of `z`. COO stores a
+sparse tensor as a list of coordinates.
+"""
+COOFormat(N, z=0.0, T=typeof(z)) = SparseCOOLevel{N}(ElementLevel{z,T}())
+
+include("postprocess.jl")
+
+export fsparse,
+    fsparse!, fsprand, fspzeros, fspeye, ffindnz, ffindnz!, fread, fwrite, countstored
+
+export bspread, bspwrite
+export ftnsread, ftnswrite, fttread, fttwrite
+
+export transfer, postype
+
+include("FinchLogic/FinchLogic.jl")
+using .FinchLogic
+
+include("scheduler/LogicCompiler.jl")
+include("scheduler/LogicExecutor.jl")
+include("scheduler/LogicInterpreter.jl")
+include("scheduler/optimize.jl")
+
+include("interface/traits.jl")
+include("interface/abstract_arrays.jl")
+include("interface/abstract_unit_ranges.jl")
+include("interface/index.jl")
+include("interface/compare.jl")
+include("interface/copy.jl")
+include("interface/fsparse.jl")
+include("interface/fileio/fileio.jl")
+include("interface/lazy.jl")
+include("interface/eager.jl")
+include("interface/einsum.jl")
+
+include("execute.jl")
+
+include("Optimizer/Optimizer.jl")
+using .Optimizer
+
+export galley_scheduler, GalleyOptimizer, AdaptiveExecutorCode, AdaptiveExecutor
+
+@deprecate default fill_value
+@deprecate redefault! set_fill_value!
+@deprecate dropdefaults dropfills
+@deprecate dropdefaults! dropfills!
+
+@deprecate SparseRLE SparseRunList
+@deprecate SparseRLELevel SparseRunListLevel
+@deprecate DenseRLE RunList
+@deprecate DenseRLELevel RunListLevel
+@deprecate SparseVBL SparseBlockList
+@deprecate SparseVBLLevel SparseBlockListLevel
+
+@static if !isdefined(Base, :get_extension)
+    function __init__()
+        @require SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf" include(
+            "../ext/SparseArraysExt.jl"
+        )
+        @require HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f" include("../ext/HDF5Ext.jl")
+        @require MatrixMarket = "4d4711f2-db25-561a-b6b3-d35e7d4047d3" include(
+            "../ext/MatrixMarketExt.jl"
+        )
+        @require TensorMarket = "8b7d4fe7-0b45-4d0d-9dd8-5cc9b23b4b77" include(
+            "../ext/TensorMarketExt.jl"
+        )
+        @require NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605" include("../ext/NPZExt.jl")
+    end
+end
+
+function workload()
+    @info "Running enhanced Galley.jl precompilation... (to disable, run `using Preferences; Preferences.set_preferences!(\"Galley\", \"precompile_workload\" => false; force=true)`). See https://julialang.github.io/PrecompileTools.jl/stable/#Package-developers:-reducing-the-cost-of-precompilation-during-development for more."
+    # all calls in this block will be precompiled, regardless of whether
+    # they belong to your package or not (on Julia 1.8 and higher)
+
+    y = Tensor(Dense(Element(0.0)))
+    A = Tensor(Dense(SparseList(Element(0.0))))
+    x = Tensor(SparseList(Element(0.0)))
+    @finch_code begin
+        for j in _, i in _
+            y[i] += A[i, j] * x[j]
         end
     end
 
-    # First, we perform high level optimization where each query is translated to one or
-    # more queries with a simpler structure: Query(name, Aggregate(op, init, idxs, point_expr))
-    # where point_expr is made up of just MapJoin, Input, and Alias nodes.
-    alias_stats, alias_hash = Dict{IndexExpr, TensorStats}(),  Dict{IndexExpr, UInt}()
-    output_aliases = isnothing(output_aliases) ? [input_query.name for input_query in input_plan.queries] : output_aliases
-    output_orders = Dict(input_query.name => input_query.expr.idx_order for input_query in input_plan.queries)
-    opt_start = time()
+    formats = []
+    Ts = [Int, Float64]#, Bool]
 
-    # Optimize Aggregation & Materialization
-    faq_opt_start = time()
-    logical_plan = high_level_optimize(faq_optimizer, input_plan, ST, alias_stats, alias_hash, verbose)
-    faq_opt_time = time() - faq_opt_start
-
-    if verbose >= 1
-        println("FAQ Opt Time: $faq_opt_time")
-        println("--------------- Logical Plan ---------------")
-        for query in logical_plan.queries
-            println(query)
+    tik = time()
+    for (n, T) in enumerate(Ts)
+        if n > 1
+            tok = time()
+            estimated = ceil(Int, (tok - tik) / (n - 1) * (length(Ts) - n + 1))
+            @info "Precompiling common tensor formats... (estimated: $(fld(estimated, 60)) minutes and $(mod(estimated, 60)) seconds)"
+        else
+            @info "Precompiling common tensor formats..."
         end
-        println("--------------------------------------------")
+        f = zero(T)
+        append!(
+            formats,
+            [
+                Scalar(f, rand(T)),
+                Tensor(Dense(Element(f)), rand(T, 2)),
+                Tensor(SparseList(Element(f)), rand(T, 2)),
+                Tensor(Dense(Dense(Element(f))), rand(T, 2, 2)),
+                Tensor(Dense(SparseList(Element(f))), rand(T, 2, 2)),
+            ],
+        )
     end
 
-    # Split-Up Large Queries
-    split_start = time()
-    split_plan = split_plan_to_kernel_limit(logical_plan, ST, max_kernel_size, alias_stats, verbose)
-    total_split_time = split_start
-
-    # Loop Order Selection
-    phys_opt_start = time()
-    alias_to_loop_order = Dict{IndexExpr, Vector{IndexExpr}}()
-    physical_plan = split_plan_to_physical_plan(split_plan, ST, alias_to_loop_order, alias_stats)
-
-    # Tensor Format Selection
-    physical_plan = modify_plan_formats!(physical_plan, alias_to_loop_order, alias_stats)
-
-    # Access Protocol Selection
-    physical_plan = modify_plan_protocols!(physical_plan, ST, alias_stats)
-    total_phys_opt_time = time() - phys_opt_start
-
-    # Duplicate Query Elmination
-    cse_plan = naive_cse!(physical_plan)
-    total_opt_time = time() - opt_start
-
-
-    if verbose >= 1
-        println("Physical Opt Time: $faq_opt_time")
-        println("--------------- Physical Plan ---------------")
-        for query in cse_plan.queries
-            println(query)
+    for (n, format) in enumerate(formats)
+        if n > 1
+            tok = time()
+            estimated = ceil(Int, (tok - tik) / (n - 1) * (length(formats) - n + 1))
+            @info "Precompiling common tensor operations... (estimated: $(fld(estimated, 60)) minutes and $(mod(estimated, 60)) seconds)"
+        else
+            @info "Precompiling common tensor operations..."
         end
-        println("--------------------------------------------")
+        A = deepcopy(format)
+        B = deepcopy(format)
+
+        if ndims(format) > 0
+            dropfills(A)
+            copyto!(A, B)
+        end
+        A == B
+        i = rand(1:2, ndims(A))
+        A[i...]
+        #if eltype(format) == Bool
+        #    .!(A)
+        #    any(A)
+        #    all(A)
+        #end
+        if eltype(format) <: Integer
+            .~(A)
+            A .& B
+            A .| B
+        end
+        if eltype(format) <: Union{Integer,AbstractFloat} && eltype(format) != Bool
+            sum(A)
+            A .* B
+            A + A
+            A - A
+            maximum(A)
+            max.(A, B)
+            println("")
+            for T in Ts
+                A * rand(T)
+                A + rand(T)
+            end
+            if ndims(A) == 2
+                A * A
+                A * Tensor(Dense(Element(zero(eltype(A)))), rand(eltype(A), 2))
+            end
+        end
     end
 
-    if output_program_instance
-        return get_execute_code(cse_plan, verbose)
+    @info "Done!"
+end
+
+@setup_workload begin
+    # Putting some things in `setup` can reduce the size of the
+    # precompile file and potentially make loading faster.
+    @compile_workload begin
+        #Base.invokelatest(workload)
     end
-
-    # Execute Queries
-    exec_start = time()
-    alias_result = execute_plan(cse_plan::PlanNode, verbose)
-    total_exec_time = time() - exec_start
-
-    total_overall_time = time()-overall_start
-    verbose >= 2 && println("Time to FAQ Opt: ", faq_opt_time)
-    verbose >= 2 && println("Time to Split Opt: ", total_split_time)
-    verbose >= 2 && println("Time to Phys Opt: ", total_phys_opt_time)
-    verbose >= 1 && println("Time to Optimize: ", (faq_opt_time + total_split_time + total_phys_opt_time))
-    verbose >= 1 && println("Time to Execute: ", total_exec_time)
-    verbose >= 1 && println("Time to count: ", total_count_time)
-    verbose >= 1 && println("Overall Time: ", total_overall_time)
-    global name_counter = counter_start
-    return (value=[alias_result[alias.name] for alias in output_aliases],
-            opt_time=total_opt_time,
-            execute_time= total_exec_time,
-            overall_time=total_overall_time)
 end
 
 end
