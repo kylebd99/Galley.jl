@@ -17,11 +17,11 @@ DocMeta.setdocmeta!(
 makedocs(;
     modules=[Galley],
     authors="Willow Ahrens",
-    repo=Remotes.GitHub("finch-tensor", "FinchGalley.jl"),
+    repo=Remotes.GitHub("finch-tensor", "Galley.jl"),
     sitename="Galley.jl",
     format=Documenter.HTML(;
         prettyurls=get(ENV, "CI", "false") == "true",
-        canonical="https://finch-tensor.github.io/FinchGalley.jl",
+        canonical="https://finch-tensor.github.io/Galley.jl",
         assets=["assets/favicon.ico"],
         size_threshold=1_000_000,
     ),
@@ -72,6 +72,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/finch-tensor/FinchGalley.jl",
+    repo="github.com/finch-tensor/Galley.jl",
     devbranch="main",
 )

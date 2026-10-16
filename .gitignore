@@ -5,3 +5,5 @@
 workflows/CI.yml
 *.out
 .vscode/*
+Manifest.toml
+.DS_Store
