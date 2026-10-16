@@ -1,7 +1,7 @@
 name = "Galley"
-uuid = "9177782c-1635-4eb9-9bfb-d9dfa25e6bce"
+uuid = "0b99cc74-af0a-4786-be99-594ac14242a4"
 version = "0.1.0"
-authors = ["Willow Ahrens"]
+authors = ["Kyle Deeds <kdeeds@cs.washington.edu >", "Willow Ahrens <ahrens@gatech.edu>"]
 
 [deps]
 AbstractTrees = "1520ce14-60c1-5f80-bbc7-55ef81b5835c"
