@@ -1,7 +1,7 @@
 We welcome contributions to Galley, and follow the [Julia contributing
 guidelines](https://github.com/JuliaLang/julia/blob/master/CONTRIBUTING.md).  If
 you use or want to use Galley and have a question or bug, please do file a
-[Github issue](https://github.com/finch-tensor/FinchGalley.jl/issues)!  If you want
+[Github issue](https://github.com/finch-tensor/Galley.jl/issues)!  If you want
 to contribute to Galley, please first file an issue to double check that there is
 interest from a contributor in the feature.
 
@@ -51,7 +51,7 @@ suite directly as `./test/runtests.jl`.
 Galley compares compiler output against reference versions.
 
 If you have the appropriate permissions, you can run the
-[FixBot](https://github.com/finch-tensor/FinchGalley.jl/actions/workflows/FixBot.yml)
+[FixBot](https://github.com/finch-tensor/Galley.jl/actions/workflows/FixBot.yml)
 github action on your PR branch to automatically generate output for both 32-bit
 and 64-bit builds.
 
@@ -97,16 +97,12 @@ With Julia 1.10 on your `PATH`, run the following commands, replacing
 
 ```sh
 git clone --branch v0.2.13 https://github.com/finch-tensor/galley-jl-python.git finch-tensor
-python3 /absolute/path/to/Galley.jl/test/rename_python_backend.py finch-tensor
 cd finch-tensor
 poetry env use python3.11
 poetry install --extras test
 poetry run python develop.py --path "/absolute/path/to/Galley.jl"
 poetry run pytest tests/
 ```
-
-The adapter updates the wrapper's Julia dependency and module references to
-`Galley` while retaining compiler API names such as `FinchNotation` and `@finch`.
 
 ## Benchmarking
 

@@ -17,7 +17,7 @@ At the [Julia](https://julialang.org/downloads/) REPL, install this package from
 
 ```julia
 julia> using Pkg;
-       Pkg.add(; url="https://github.com/finch-tensor/FinchGalley.jl");
+       Pkg.add(; url="https://github.com/finch-tensor/Galley.jl");
 
 ```
 

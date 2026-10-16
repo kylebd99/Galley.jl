@@ -127,7 +127,7 @@ y = Tensor(Dense(Element(0.0)));
 end
 ```
 
-More examples are given in the [examples directory](https://github.com/finch-tensor/FinchGalley.jl/blob/main/docs/examples).
+More examples are given in the [examples directory](https://github.com/finch-tensor/Galley.jl/blob/main/docs/examples).
 
 # Usage
 
