@@ -1,6 +1,4 @@
-## Note: Galley.jl has been folded into Finch.jl! Future updates are occuring inside of that repository.
-
-# Overview
+# Galley.jl
 
 Galley is a system for declarative sparse tensor algebra. It combines techniques from database query optimization with the flexible formats and execution of sparse tensor compilers, specifically the [Finch compiler](https://github.com/willow-ahrens/Finch.jl). Details about the theory and system design can be found in our paper [here](https://arxiv.org/abs/2408.14706). There are two main ways to interact with Galley:
 
