@@ -1,0 +1,120 @@
+begin
+    y_lvl = ((ex.bodies[1]).bodies[1]).tns.bind.lvl
+    y_lvl_2 = y_lvl.lvl
+    y_lvl_2_locks = y_lvl_2.locks
+    y_lvl_3 = y_lvl_2.lvl
+    y_lvl_3_val = y_lvl_3.val
+    x_lvl = ((ex.bodies[1]).bodies[2]).body.rhs.tns.bind.lvl
+    x_lvl_stop = x_lvl.shape
+    x_lvl_2 = x_lvl.lvl
+    x_lvl_2_val = x_lvl_2.val
+    y_j_data = (((ex.bodies[1]).bodies[2]).body.body.bodies[1]).tns.bind
+    A_lvl = (((ex.bodies[1]).bodies[2]).body.body.bodies[2]).body.rhs.tns.bind.lvl
+    A_lvl_stop = A_lvl.shape
+    A_lvl_2 = A_lvl.lvl
+    A_lvl_2_ptr = A_lvl_2.ptr
+    A_lvl_2_idx = A_lvl_2.idx
+    A_lvl_2_stop = A_lvl_2.shape
+    A_lvl_3 = A_lvl_2.lvl
+    A_lvl_3_val = A_lvl_3.val
+    diag_lvl = (((((ex.bodies[1]).bodies[2]).body.body.bodies[3]).rhs.args[2]).args[1]).tns.bind.lvl
+    diag_lvl_stop = diag_lvl.shape
+    diag_lvl_2 = diag_lvl.lvl
+    diag_lvl_2_val = diag_lvl_2.val
+    n = (Base.Threads).nthreads()
+    x_lvl_stop == A_lvl_stop || throw(DimensionMismatch("mismatched dimension limits ($(x_lvl_stop) != $(A_lvl_stop))"))
+    x_lvl_stop == A_lvl_2_stop || throw(DimensionMismatch("mismatched dimension limits ($(x_lvl_stop) != $(A_lvl_2_stop))"))
+    x_lvl_stop == diag_lvl_stop || throw(DimensionMismatch("mismatched dimension limits ($(x_lvl_stop) != $(diag_lvl_stop))"))
+    Galley.resize_if_smaller!(y_lvl_2_locks, x_lvl_stop)
+    @inbounds for idx = 1:x_lvl_stop
+            y_lvl_2_locks[idx] = Galley.make_lock(eltype(Vector{Base.Threads.SpinLock}))
+        end
+    Galley.resize_if_smaller!(y_lvl_3_val, x_lvl_stop)
+    Galley.fill_range!(y_lvl_3_val, 0.0, 1, x_lvl_stop)
+    x_lvl_2_val_2 = (Galley).transfer((Galley.CPUSharedMemory)(Galley.CPU{:id}(n)), x_lvl_2_val)
+    A_lvl_3_val_2 = (Galley).transfer((Galley.CPUSharedMemory)(Galley.CPU{:id}(n)), A_lvl_3_val)
+    A_lvl_2_ptr_2 = (Galley).transfer((Galley.CPUSharedMemory)(Galley.CPU{:id}(n)), A_lvl_2_ptr)
+    A_lvl_2_idx_2 = (Galley).transfer((Galley.CPUSharedMemory)(Galley.CPU{:id}(n)), A_lvl_2_idx)
+    y_lvl_3_val_2 = (Galley).transfer((Galley.CPUSharedMemory)(Galley.CPU{:id}(n)), y_lvl_3_val)
+    y_lvl_2_locks_2 = (Galley).transfer((Galley.CPUSharedMemory)(Galley.CPU{:id}(n)), y_lvl_2_locks)
+    diag_lvl_2_val_2 = (Galley).transfer((Galley.CPUSharedMemory)(Galley.CPU{:id}(n)), diag_lvl_2_val)
+    Galley.@barrier Threads.@threads(:dynamic, for tid = 1:n
+                @inbounds @fastmath(begin
+                            x_lvl_2_val_3 = (Galley).transfer((Galley.CPUThread)(tid, Galley.CPU{:id}(n), (Galley.SerialTask)()), x_lvl_2_val_2)
+                            A_lvl_3_val_3 = (Galley).transfer((Galley.CPUThread)(tid, Galley.CPU{:id}(n), (Galley.SerialTask)()), A_lvl_3_val_2)
+                            A_lvl_2_ptr_3 = (Galley).transfer((Galley.CPUThread)(tid, Galley.CPU{:id}(n), (Galley.SerialTask)()), A_lvl_2_ptr_2)
+                            A_lvl_2_idx_3 = (Galley).transfer((Galley.CPUThread)(tid, Galley.CPU{:id}(n), (Galley.SerialTask)()), A_lvl_2_idx_2)
+                            y_lvl_3_val_3 = (Galley).transfer((Galley.CPUThread)(tid, Galley.CPU{:id}(n), (Galley.SerialTask)()), y_lvl_3_val_2)
+                            y_lvl_2_locks_3 = (Galley).transfer((Galley.CPUThread)(tid, Galley.CPU{:id}(n), (Galley.SerialTask)()), y_lvl_2_locks_2)
+                            diag_lvl_2_val_3 = (Galley).transfer((Galley.CPUThread)(tid, Galley.CPU{:id}(n), (Galley.SerialTask)()), diag_lvl_2_val_2)
+                            phase_start_2 = max(1, 1 + fld(x_lvl_stop * (tid + -1), n))
+                            phase_stop_2 = min(x_lvl_stop, fld(x_lvl_stop * tid, n))
+                            if phase_stop_2 >= phase_start_2
+                                for j_8 = phase_start_2:phase_stop_2
+                                    x_lvl_q = (1 - 1) * x_lvl_stop + j_8
+                                    A_lvl_q = (1 - 1) * A_lvl_stop + j_8
+                                    y_lvl_q = (1 - 1) * x_lvl_stop + j_8
+                                    diag_lvl_q = (1 - 1) * diag_lvl_stop + j_8
+                                    x_lvl_2_val_4 = x_lvl_2_val_3[x_lvl_q]
+                                    diag_lvl_2_val_4 = diag_lvl_2_val_3[diag_lvl_q]
+                                    y_j_val = 0
+                                    A_lvl_2_q = A_lvl_2_ptr_3[A_lvl_q]
+                                    A_lvl_2_q_stop = A_lvl_2_ptr_3[A_lvl_q + 1]
+                                    if A_lvl_2_q < A_lvl_2_q_stop
+                                        A_lvl_2_i1 = A_lvl_2_idx_3[A_lvl_2_q_stop - 1]
+                                    else
+                                        A_lvl_2_i1 = 0
+                                    end
+                                    phase_stop_3 = min(x_lvl_stop, A_lvl_2_i1)
+                                    if phase_stop_3 >= 1
+                                        if A_lvl_2_idx_3[A_lvl_2_q] < 1
+                                            A_lvl_2_q = Galley.scansearch(A_lvl_2_idx_3, 1, A_lvl_2_q, A_lvl_2_q_stop - 1)
+                                        end
+                                        while true
+                                            A_lvl_2_i = A_lvl_2_idx_3[A_lvl_2_q]
+                                            if A_lvl_2_i < phase_stop_3
+                                                A_lvl_3_val_4 = A_lvl_3_val_3[A_lvl_2_q]
+                                                y_lvl_q_2 = (1 - 1) * x_lvl_stop + A_lvl_2_i
+                                                x_lvl_q_2 = (1 - 1) * x_lvl_stop + A_lvl_2_i
+                                                x_lvl_2_val_5 = x_lvl_2_val_3[x_lvl_q_2]
+                                                y_lvl_2atomicArraysAcc = Galley.get_lock(Galley.CPU{:id}(n), y_lvl_2_locks_3, y_lvl_q_2, eltype(Vector{Base.Threads.SpinLock}))
+                                                Galley.aquire_lock!(Galley.CPU{:id}(n), y_lvl_2atomicArraysAcc)
+                                                y_lvl_3_val_3[y_lvl_q_2] = A_lvl_3_val_4 * x_lvl_2_val_4 + y_lvl_3_val_3[y_lvl_q_2]
+                                                Galley.release_lock!(Galley.CPU{:id}(n), y_lvl_2atomicArraysAcc)
+                                                y_j_val = A_lvl_3_val_4 * x_lvl_2_val_5 + y_j_val
+                                                A_lvl_2_q += 1
+                                            else
+                                                phase_stop_5 = min(phase_stop_3, A_lvl_2_i)
+                                                if A_lvl_2_i == phase_stop_5
+                                                    A_lvl_3_val_4 = A_lvl_3_val_3[A_lvl_2_q]
+                                                    y_lvl_q_2 = (1 - 1) * x_lvl_stop + phase_stop_5
+                                                    x_lvl_q_2 = (1 - 1) * x_lvl_stop + phase_stop_5
+                                                    x_lvl_2_val_6 = x_lvl_2_val_3[x_lvl_q_2]
+                                                    y_lvl_2atomicArraysAcc_2 = Galley.get_lock(Galley.CPU{:id}(n), y_lvl_2_locks_3, y_lvl_q_2, eltype(Vector{Base.Threads.SpinLock}))
+                                                    Galley.aquire_lock!(Galley.CPU{:id}(n), y_lvl_2atomicArraysAcc_2)
+                                                    y_lvl_3_val_3[y_lvl_q_2] = A_lvl_3_val_4 * x_lvl_2_val_4 + y_lvl_3_val_3[y_lvl_q_2]
+                                                    Galley.release_lock!(Galley.CPU{:id}(n), y_lvl_2atomicArraysAcc_2)
+                                                    y_j_val += A_lvl_3_val_4 * x_lvl_2_val_6
+                                                    A_lvl_2_q += 1
+                                                end
+                                                break
+                                            end
+                                        end
+                                    end
+                                    y_j_data.val = y_j_val
+                                    y_lvl_2atomicArraysAcc_3 = Galley.get_lock(Galley.CPU{:id}(n), y_lvl_2_locks_3, y_lvl_q, eltype(Vector{Base.Threads.SpinLock}))
+                                    Galley.aquire_lock!(Galley.CPU{:id}(n), y_lvl_2atomicArraysAcc_3)
+                                    y_lvl_3_val_3[y_lvl_q] = x_lvl_2_val_4 * diag_lvl_2_val_4 + y_j_val + y_lvl_3_val_3[y_lvl_q]
+                                    Galley.release_lock!(Galley.CPU{:id}(n), y_lvl_2atomicArraysAcc_3)
+                                end
+                            end
+                            phase_start_6 = max(1, 1 + fld(x_lvl_stop * tid, n))
+                            if x_lvl_stop >= phase_start_6
+                                x_lvl_stop + 1
+                            end
+                        end)
+            end)
+    resize!(y_lvl_2_locks_2, x_lvl_stop)
+    Galley.resize_if_larger!(y_lvl_3_val_2, x_lvl_stop)
+    (y = Tensor((DenseLevel){Int32}((MutexLevel){Vector{Base.Threads.SpinLock}, ElementLevel{0.0, Float64, Int32, Vector{Float64}}}(ElementLevel{0.0, Float64, Int32}(y_lvl_3_val_2), y_lvl_2_locks_2), x_lvl_stop)),)
+end
