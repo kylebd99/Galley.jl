@@ -1,6 +1,6 @@
 name = "Galley"
 uuid = "0b99cc74-af0a-4786-be99-594ac14242a4"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Kyle Deeds <kdeeds@cs.washington.edu >", "Willow Ahrens <ahrens@gatech.edu>"]
 
 [deps]
